@@ -1,6 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import initSqlJs from 'sql.js';
-import sqlWasmUrl from 'sql.js/dist/sql-wasm-browser.wasm?url';
 import {
   AlertCircle,
   CheckCircle2,
@@ -278,9 +276,30 @@ export const MigrationToolView: React.FC = () => {
   };
 
   const parseSqliteDatabase = async (file: File): Promise<DetectedSourceTable[]> => {
-    const SQL = await initSqlJs({
-      locateFile: () => sqlWasmUrl,
-    });
+    const [{ default: initSqlJs }, { default: wasmSource }] = await Promise.all([
+      import('sql.js'),
+      import('sql.js/dist/sql-wasm-browser.wasm?url&inline'),
+    ]);
+
+    let wasmBinary: ArrayBuffer;
+    if (wasmSource.startsWith('data:')) {
+      const commaIdx = wasmSource.indexOf(',');
+      const base64 = commaIdx >= 0 ? wasmSource.slice(commaIdx + 1) : wasmSource;
+      const binaryString = atob(base64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      wasmBinary = bytes.buffer;
+    } else {
+      const res = await fetch(wasmSource, { credentials: 'same-origin' });
+      if (!res.ok) {
+        throw new Error(`تعذر تحميل محرك قراءة SQLite (${res.status}).`);
+      }
+      wasmBinary = await res.arrayBuffer();
+    }
+
+    const SQL = await initSqlJs({ wasmBinary });
     const buffer = await file.arrayBuffer();
     const sqliteDb = new SQL.Database(new Uint8Array(buffer));
 
