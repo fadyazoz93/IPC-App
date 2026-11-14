@@ -1,0 +1,6 @@
+{
+  "name": "البوابة الطبية الموحدة متعددة المراكز",
+  "description": "منصة موحدة لإدارة العمليات الطبية، التدريب، مكافحة العدوى، ومعايير الجودة والاعتماد للمستشفيات والمراكز الطبية مع عزل كامل للبيانات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
