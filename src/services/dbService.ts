@@ -93,9 +93,19 @@ class UnifiedDbService {
         ...(options?.headers || {}),
       },
     });
-    const body = await res.json().catch(() => ({}));
+    const rawText = await res.text();
+    let body: { error?: string } = {};
+    try {
+      body = rawText ? (JSON.parse(rawText) as { error?: string }) : {};
+    } catch {
+      body = {};
+    }
     if (!res.ok) {
-      throw new Error((body as { error?: string }).error || 'حدث خطأ أثناء الاتصال بالخادم.');
+      const fallbackMsg =
+        res.status === 404
+          ? 'حدث خطأ أثناء الاتصال بالخادم (المسار غير موجود).'
+          : `حدث خطأ أثناء الاتصال بالخادم (${res.status}).`;
+      throw new Error(body.error || fallbackMsg);
     }
     return body as T;
   }

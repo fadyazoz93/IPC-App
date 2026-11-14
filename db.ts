@@ -1,4 +1,4 @@
-import { createClient, type Client, type InValue, type ResultSet, type Transaction } from '@libsql/client';
+import type { Client, InValue, ResultSet, Transaction } from '@libsql/client';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -43,16 +43,31 @@ export const dbMeta = {
   hasAuthToken: Boolean(rawAuthToken),
 };
 
-export const client: Client = createClient(
-  isTursoRemote
-    ? {
-        url: effectiveUrl,
-        authToken: rawAuthToken || undefined,
+let clientPromise: Promise<Client> | null = null;
+
+async function getClient(): Promise<Client> {
+  if (!clientPromise) {
+    clientPromise = (async () => {
+      if (isTursoRemote) {
+        // Use the pure JS/HTTP web client for remote Turso so serverless environments (Vercel)
+        // never depend on native libsql C++ bindings or WebSocket upgrades.
+        const { createClient } = await import('@libsql/client/web');
+        return createClient({
+          url: effectiveUrl,
+          authToken: rawAuthToken || undefined,
+        });
       }
-    : {
+      const { createClient } = await import('@libsql/client');
+      return createClient({
         url: effectiveUrl,
-      }
-);
+      });
+    })().catch((err) => {
+      clientPromise = null;
+      throw err;
+    });
+  }
+  return clientPromise;
+}
 
 export interface DbExecutor {
   get<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | undefined>;
@@ -80,18 +95,24 @@ function mapRows<T>(res: ResultSet): T[] {
   });
 }
 
-function createExecutor(target: Client | Transaction, isTx = false): DbExecutor {
+function createExecutor(
+  getTarget: () => Promise<Client | Transaction>,
+  isTx = false
+): DbExecutor {
   return {
     async get<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T | undefined> {
+      const target = await getTarget();
       const res = await target.execute({ sql, args: normalizeArgs(params) });
       const rows = mapRows<T>(res);
       return rows[0];
     },
     async all<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
+      const target = await getTarget();
       const res = await target.execute({ sql, args: normalizeArgs(params) });
       return mapRows<T>(res);
     },
     async run(sql: string, params?: unknown[]): Promise<{ changes: number; lastInsertRowid?: bigint }> {
+      const target = await getTarget();
       const res = await target.execute({ sql, args: normalizeArgs(params) });
       return {
         changes: Number(res.rowsAffected || 0),
@@ -99,13 +120,25 @@ function createExecutor(target: Client | Transaction, isTx = false): DbExecutor 
       };
     },
     async exec(sql: string): Promise<void> {
+      const target = await getTarget();
       if ('executeMultiple' in target && typeof target.executeMultiple === 'function') {
         await target.executeMultiple(sql);
+        return;
+      }
+      const statements = sql
+        .split(';')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (statements.length === 0) return;
+
+      if (!isTx && 'batch' in target && typeof (target as Client).batch === 'function') {
+        await (target as Client).batch(
+          statements.map((stmt) => ({ sql: stmt, args: [] })),
+          'write'
+        );
+      } else if (isTx && 'batch' in target && typeof (target as Transaction).batch === 'function') {
+        await (target as Transaction).batch(statements.map((stmt) => ({ sql: stmt, args: [] })));
       } else {
-        const statements = sql
-          .split(';')
-          .map((s) => s.trim())
-          .filter(Boolean);
         for (const stmt of statements) {
           await target.execute(stmt);
         }
@@ -113,6 +146,7 @@ function createExecutor(target: Client | Transaction, isTx = false): DbExecutor 
     },
     async batch(statements: Array<{ sql: string; args?: unknown[] }>): Promise<void> {
       if (statements.length === 0) return;
+      const target = await getTarget();
       const formatted = statements.map((s) => ({ sql: s.sql, args: normalizeArgs(s.args) }));
       if (!isTx && 'batch' in target && typeof (target as Client).batch === 'function') {
         await (target as Client).batch(formatted, 'write');
@@ -127,7 +161,7 @@ function createExecutor(target: Client | Transaction, isTx = false): DbExecutor 
   };
 }
 
-const baseExecutor = createExecutor(client, false);
+const baseExecutor = createExecutor(() => getClient(), false);
 
 export const db: DbExecutor & {
   transaction: <T>(fn: (tx: DbExecutor) => Promise<T>) => Promise<T>;
@@ -135,8 +169,9 @@ export const db: DbExecutor & {
 } = {
   ...baseExecutor,
   async transaction<T>(fn: (tx: DbExecutor) => Promise<T>): Promise<T> {
+    const client = await getClient();
     const tx = await client.transaction('write');
-    const txExecutor = createExecutor(tx, true);
+    const txExecutor = createExecutor(async () => tx, true);
     try {
       const result = await fn(txExecutor);
       await tx.commit();
@@ -154,6 +189,7 @@ export const db: DbExecutor & {
   },
   async ping(): Promise<number> {
     const start = Date.now();
+    const client = await getClient();
     await client.execute('SELECT 1');
     return Date.now() - start;
   },
