@@ -6017,7 +6017,15 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
+const isServerlessRuntime = Boolean(
+  process.env.VERCEL ||
+    process.env.VERCEL_ENV ||
+    process.env.VERCEL_REGION ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    (globalThis as Record<string, unknown>).__PORTAL_SERVERLESS__
+);
+
+if (!isServerlessRuntime) {
   startServer().catch((err) => {
     console.error('Failed to start server:', err);
     process.exit(1);

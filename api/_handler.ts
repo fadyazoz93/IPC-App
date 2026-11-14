@@ -15,12 +15,21 @@ function restoreOriginalApiUrl(req: Request): void {
     return;
   }
 
-  if (pathnamePart === '/api/index' || pathnamePart === '/api') {
+  if (
+    pathnamePart === '/api/index' ||
+    pathnamePart === '/api/index.cjs' ||
+    pathnamePart === '/api'
+  ) {
     const headerPath =
       (req.headers['x-vercel-original-path'] as string | undefined) ||
       (req.headers['x-invoke-path'] as string | undefined) ||
       (req.headers['x-matched-path'] as string | undefined);
-    if (headerPath && headerPath.startsWith('/api/') && headerPath !== '/api/index') {
+    if (
+      headerPath &&
+      headerPath.startsWith('/api/') &&
+      headerPath !== '/api/index' &&
+      headerPath !== '/api/index.cjs'
+    ) {
       req.url = searchPart ? `${headerPath}?${searchPart}` : headerPath;
     }
   }
@@ -30,12 +39,22 @@ export default async function handler(req: Request, res: Response) {
   try {
     restoreOriginalApiUrl(req);
     await ensureDbReady();
-    return app(req, res);
+    await new Promise<void>((resolve) => {
+      if (res.writableEnded) {
+        resolve();
+        return;
+      }
+      res.once('finish', resolve);
+      res.once('close', resolve);
+      app(req, res);
+    });
   } catch (err) {
     console.error('Vercel API handler initialization error:', err);
     if (!res.headersSent) {
       const msg = err instanceof Error ? err.message : 'تعذر الاتصال بقاعدة البيانات أو تهيئة الخادم.';
-      res.status(500).json({ error: msg });
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: msg }));
     }
   }
 }
