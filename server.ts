@@ -2398,36 +2398,47 @@ async function saveTrainingBundleToUnifiedDb(
     const insSql = `INSERT INTO module_two_records
          (id, facility_id, department_id, legacy_id, created_by, payload, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+    const batchStmts: Array<{ sql: string; args: unknown[] }> = [];
 
     for (const log of bundle.logs || []) {
       const uid = `m2-${crypto.randomUUID()}`;
       const lid = log.ID ? String(log.ID) : uid;
       const dateStr = String(log.Date || '').split('T')[0];
-      await tx.run(insSql, [
-        uid,
-        facilityId,
-        firstDept,
-        lid,
-        createdBy,
-        JSON.stringify({ record_type: 'training_log', ...log, ID: lid }),
-        'training_log',
-        dateStr ? `${dateStr}T09:00:00.000Z` : new Date().toISOString(),
-      ]);
+      batchStmts.push({
+        sql: insSql,
+        args: [
+          uid,
+          facilityId,
+          firstDept,
+          lid,
+          createdBy,
+          JSON.stringify({ record_type: 'training_log', ...log, ID: lid }),
+          'training_log',
+          dateStr ? `${dateStr}T09:00:00.000Z` : new Date().toISOString(),
+        ],
+      });
     }
 
     for (const pln of bundle.plan || []) {
       const uid = `m2-${crypto.randomUUID()}`;
       const lid = pln.ID ? String(pln.ID) : uid;
-      await tx.run(insSql, [
-        uid,
-        facilityId,
-        firstDept,
-        lid,
-        createdBy,
-        JSON.stringify({ record_type: 'training_plan', ...pln, ID: lid }),
-        'training_plan',
-        new Date().toISOString(),
-      ]);
+      batchStmts.push({
+        sql: insSql,
+        args: [
+          uid,
+          facilityId,
+          firstDept,
+          lid,
+          createdBy,
+          JSON.stringify({ record_type: 'training_plan', ...pln, ID: lid }),
+          'training_plan',
+          new Date().toISOString(),
+        ],
+      });
+    }
+
+    for (let i = 0; i < batchStmts.length; i += 150) {
+      await tx.batch(batchStmts.slice(i, i + 150));
     }
 
     // Persist isolated Module Two settings + categories + employees scoped strictly to facility_id
@@ -3904,12 +3915,31 @@ async function executeSmartMigration(
     duplicates_skipped: 0,
   };
 
+  const [existingDepts, existingStaff, m1LegacyRows, m2LegacyRows, m3LegacyRows] = await Promise.all([
+    db.all<{ id: string; name: string }>(
+      'SELECT id, name FROM facility_departments WHERE facility_id = ?',
+      [facilityId]
+    ),
+    db.all<{ id: string; name: string; employee_code: string }>(
+      'SELECT id, name, employee_code FROM facility_staff WHERE facility_id = ?',
+      [facilityId]
+    ),
+    db.all<{ legacy_id: string }>(
+      'SELECT legacy_id FROM module_one_records WHERE facility_id = ? AND legacy_id IS NOT NULL',
+      [facilityId]
+    ),
+    db.all<{ legacy_id: string }>(
+      'SELECT legacy_id FROM module_two_records WHERE facility_id = ? AND legacy_id IS NOT NULL',
+      [facilityId]
+    ),
+    db.all<{ legacy_id: string }>(
+      'SELECT legacy_id FROM module_three_records WHERE facility_id = ? AND legacy_id IS NOT NULL',
+      [facilityId]
+    ),
+  ]);
+
   const deptByName = new Map<string, string>();
   const deptByLegacyId = new Map<string, string>();
-  const existingDepts = await db.all<{ id: string; name: string }>(
-    'SELECT id, name FROM facility_departments WHERE facility_id = ?',
-    [facilityId]
-  );
   for (const d of existingDepts) {
     deptByName.set(d.name.trim().toLowerCase(), d.id);
     deptByLegacyId.set(d.id, d.id);
@@ -3918,470 +3948,463 @@ async function executeSmartMigration(
   const staffByCode = new Map<string, string>();
   const staffByName = new Map<string, string>();
   const staffByLegacyId = new Map<string, string>();
-  const existingStaff = await db.all<{ id: string; name: string; employee_code: string }>(
-    'SELECT id, name, employee_code FROM facility_staff WHERE facility_id = ?',
-    [facilityId]
-  );
   for (const s of existingStaff) {
     staffByCode.set(s.employee_code.trim().toUpperCase(), s.id);
     staffByName.set(s.name.trim().toLowerCase(), s.id);
     staffByLegacyId.set(s.id, s.id);
   }
 
-  await db.transaction(async (tx) => {
-    const ensureFallbackDeptId = async (): Promise<string> => {
-      const existing = Array.from(deptByName.values())[0];
-      if (existing) return existing;
-      const newId = `dep-${crypto.randomUUID()}`;
-      await tx.run('INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)', [
-        newId,
-        facilityId,
-        'قسم عام مرحل',
-        'إكلينيكي',
-      ]);
-      deptByName.set('قسم عام مرحل', newId);
-      summary.departments_upserted++;
-      return newId;
+  const existingM1Legacy = new Set(m1LegacyRows.map((r) => r.legacy_id).filter(Boolean));
+  const existingM2Legacy = new Set(m2LegacyRows.map((r) => r.legacy_id).filter(Boolean));
+  const existingM3Legacy = new Set(m3LegacyRows.map((r) => r.legacy_id).filter(Boolean));
+
+  const phase1Statements: Array<{ sql: string; args: unknown[] }> = [];
+  const phase2Statements: Array<{ sql: string; args: unknown[] }> = [];
+
+  const ensureFallbackDeptId = (): string => {
+    const existing = Array.from(deptByName.values())[0];
+    if (existing) return existing;
+    const newId = `dep-${crypto.randomUUID()}`;
+    phase1Statements.push({
+      sql: 'INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)',
+      args: [newId, facilityId, 'قسم عام مرحل', 'إكلينيكي'],
+    });
+    deptByName.set('قسم عام مرحل', newId);
+    summary.departments_upserted++;
+    return newId;
+  };
+
+  // ------------------------------------------------------------------------
+  // PHASE 1: MASTER DATA & ISOLATED PER-MODULE SETTINGS FIRST
+  // ------------------------------------------------------------------------
+  // 1A. Leaders
+  for (const entry of tables.filter((t) => t.target === 'leaders')) {
+    for (const row of entry.rows) {
+      const hospital_director = pickStr(row, ['hospital_director', 'hospitalDirector', 'Hospital_Manager_Name', 'managerSignature']);
+      const quality_director = pickStr(row, ['quality_director', 'qualityDirector']);
+      const ic_supervisor = pickStr(row, ['ic_supervisor', 'icSupervisor', 'IC_Manager_Name', 'teamSignature']);
+      const nursing_director = pickStr(row, ['nursing_director', 'nursingDirector']);
+      if (hospital_director || quality_director || ic_supervisor || nursing_director) {
+        await saveMasterSettings(
+          facilityId,
+          {
+            ...(hospital_director ? { hospital_director } : {}),
+            ...(quality_director ? { quality_director } : {}),
+            ...(ic_supervisor ? { ic_supervisor } : {}),
+            ...(nursing_director ? { nursing_director } : {}),
+          },
+          db
+        );
+        summary.leaders_updated++;
+      }
+    }
+  }
+
+  // 1B-1. Module One Settings (تقارير المرور)
+  for (const entry of tables.filter((t) => t.target === 'module_one_settings')) {
+    const next = await getOrCreateModuleOneSettings(facilityId, db);
+    let touched = false;
+
+    const absorbM1Object = (obj: Record<string, unknown>) => {
+      const hName = pickStr(obj, ['hospitalName', 'hospital_name']);
+      const tSig = pickStr(obj, ['teamSignature', 'team_signature', 'ic_supervisor']);
+      const mSig = pickStr(obj, ['managerSignature', 'manager_signature', 'hospital_director']);
+      const rLogo = pickStr(obj, ['rightLogoUrl', 'right_logo_url', 'logoRight']);
+      const lLogo = pickStr(obj, ['leftLogoUrl', 'left_logo_url', 'logoLeft']);
+      if (hName) { next.hospitalName = hName; touched = true; }
+      if (tSig) { next.teamSignature = tSig; touched = true; }
+      if (mSig) { next.managerSignature = mSig; touched = true; }
+      if (rLogo) { next.rightLogoUrl = rLogo; touched = true; }
+      if (lLogo) { next.leftLogoUrl = lLogo; touched = true; }
+
+      const deptsVal = parseJsonOrArrayField(obj.departments);
+      if (Array.isArray(deptsVal)) {
+        next.departments = Array.from(new Set([...next.departments, ...deptsVal.map(String).filter(Boolean)]));
+        touched = true;
+      }
+      const periodsVal = parseJsonOrArrayField(obj.periods);
+      if (Array.isArray(periodsVal) && periodsVal.length > 0) {
+        next.periods = Array.from(new Set(periodsVal.map(String).filter(Boolean)));
+        touched = true;
+      }
+      const inspVal = parseJsonOrArrayField(obj.inspectors);
+      if (Array.isArray(inspVal)) {
+        next.inspectors = Array.from(new Set([...next.inspectors, ...inspVal.map(String).filter(Boolean)]));
+        touched = true;
+      }
+      const implVal = parseJsonOrArrayField(obj.implementers);
+      if (Array.isArray(implVal)) {
+        next.implementers = Array.from(new Set([...next.implementers, ...implVal.map(String).filter(Boolean)]));
+        touched = true;
+      }
+      const procsVal = parseJsonOrArrayField(obj.procedures);
+      if (Array.isArray(procsVal) && procsVal.length > 0) {
+        next.procedures = procsVal as ReportProcedureConfig[];
+        touched = true;
+      }
     };
 
-    // ------------------------------------------------------------------------
-    // PHASE 1: MASTER DATA & ISOLATED PER-MODULE SETTINGS FIRST
-    // ------------------------------------------------------------------------
-    // 1A. Leaders
-    for (const entry of tables.filter((t) => t.target === 'leaders')) {
-      for (const row of entry.rows) {
-        const hospital_director = pickStr(row, ['hospital_director', 'hospitalDirector', 'Hospital_Manager_Name', 'managerSignature']);
-        const quality_director = pickStr(row, ['quality_director', 'qualityDirector']);
-        const ic_supervisor = pickStr(row, ['ic_supervisor', 'icSupervisor', 'IC_Manager_Name', 'teamSignature']);
-        const nursing_director = pickStr(row, ['nursing_director', 'nursingDirector']);
-        if (hospital_director || quality_director || ic_supervisor || nursing_director) {
-          await saveMasterSettings(
-            facilityId,
-            {
-              ...(hospital_director ? { hospital_director } : {}),
-              ...(quality_director ? { quality_director } : {}),
-              ...(ic_supervisor ? { ic_supervisor } : {}),
-              ...(nursing_director ? { nursing_director } : {}),
-            },
-            tx
-          );
-          summary.leaders_updated++;
+    for (const row of entry.rows) {
+      const rawJson = row.settings_json ?? row.payload ?? row.data_json;
+      if (rawJson !== undefined) {
+        const parsed = parseJsonOrArrayField(rawJson);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          absorbM1Object(parsed as Record<string, unknown>);
         }
       }
+      const sType = pickStr(row, ['Type', 'type', 'key', 'setting_key']);
+      const sVal = pickStr(row, ['Value', 'value', 'val', 'setting_value']);
+      if (sType && sVal) {
+        touched = true;
+        if (sType === 'hospitalName' || sType === 'Hospital_Name') next.hospitalName = sVal;
+        else if (sType === 'teamSignature' || sType === 'IC_Manager_Name') next.teamSignature = sVal;
+        else if (sType === 'managerSignature' || sType === 'Hospital_Manager_Name') next.managerSignature = sVal;
+        else if (sType === 'rightLogoUrl' || sType === 'Hospital_Logo') next.rightLogoUrl = sVal;
+        else if (sType === 'leftLogoUrl' || sType === 'Hospital_Logo_Left') next.leftLogoUrl = sVal;
+        else if (sType === 'department' && !next.departments.includes(sVal)) next.departments.push(sVal);
+        else if (sType === 'period' && !next.periods.includes(sVal)) next.periods.push(sVal);
+        else if (sType === 'inspector' && !next.inspectors.includes(sVal)) next.inspectors.push(sVal);
+        else if (sType === 'implementer' && !next.implementers.includes(sVal)) next.implementers.push(sVal);
+        continue;
+      }
+      absorbM1Object(row);
     }
 
-    // 1B-1. Module One Settings (تقارير المرور)
-    for (const entry of tables.filter((t) => t.target === 'module_one_settings')) {
-      const next = await getOrCreateModuleOneSettings(facilityId, tx);
-      let touched = false;
-
-      const absorbM1Object = (obj: Record<string, unknown>) => {
-        const hName = pickStr(obj, ['hospitalName', 'hospital_name']);
-        const tSig = pickStr(obj, ['teamSignature', 'team_signature', 'ic_supervisor']);
-        const mSig = pickStr(obj, ['managerSignature', 'manager_signature', 'hospital_director']);
-        const rLogo = pickStr(obj, ['rightLogoUrl', 'right_logo_url', 'logoRight']);
-        const lLogo = pickStr(obj, ['leftLogoUrl', 'left_logo_url', 'logoLeft']);
-        if (hName) { next.hospitalName = hName; touched = true; }
-        if (tSig) { next.teamSignature = tSig; touched = true; }
-        if (mSig) { next.managerSignature = mSig; touched = true; }
-        if (rLogo) { next.rightLogoUrl = rLogo; touched = true; }
-        if (lLogo) { next.leftLogoUrl = lLogo; touched = true; }
-
-        const deptsVal = parseJsonOrArrayField(obj.departments);
-        if (Array.isArray(deptsVal)) {
-          next.departments = Array.from(new Set([...next.departments, ...deptsVal.map(String).filter(Boolean)]));
-          touched = true;
-        }
-        const periodsVal = parseJsonOrArrayField(obj.periods);
-        if (Array.isArray(periodsVal) && periodsVal.length > 0) {
-          next.periods = Array.from(new Set(periodsVal.map(String).filter(Boolean)));
-          touched = true;
-        }
-        const inspVal = parseJsonOrArrayField(obj.inspectors);
-        if (Array.isArray(inspVal)) {
-          next.inspectors = Array.from(new Set([...next.inspectors, ...inspVal.map(String).filter(Boolean)]));
-          touched = true;
-        }
-        const implVal = parseJsonOrArrayField(obj.implementers);
-        if (Array.isArray(implVal)) {
-          next.implementers = Array.from(new Set([...next.implementers, ...implVal.map(String).filter(Boolean)]));
-          touched = true;
-        }
-        const procsVal = parseJsonOrArrayField(obj.procedures);
-        if (Array.isArray(procsVal) && procsVal.length > 0) {
-          next.procedures = procsVal as ReportProcedureConfig[];
-          touched = true;
-        }
-      };
-
-      for (const row of entry.rows) {
-        const rawJson = row.settings_json ?? row.payload ?? row.data_json;
-        if (rawJson !== undefined) {
-          const parsed = parseJsonOrArrayField(rawJson);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            absorbM1Object(parsed as Record<string, unknown>);
-          }
-        }
-        const sType = pickStr(row, ['Type', 'type', 'key', 'setting_key']);
-        const sVal = pickStr(row, ['Value', 'value', 'val', 'setting_value']);
-        if (sType && sVal) {
-          touched = true;
-          if (sType === 'hospitalName' || sType === 'Hospital_Name') next.hospitalName = sVal;
-          else if (sType === 'teamSignature' || sType === 'IC_Manager_Name') next.teamSignature = sVal;
-          else if (sType === 'managerSignature' || sType === 'Hospital_Manager_Name') next.managerSignature = sVal;
-          else if (sType === 'rightLogoUrl' || sType === 'Hospital_Logo') next.rightLogoUrl = sVal;
-          else if (sType === 'leftLogoUrl' || sType === 'Hospital_Logo_Left') next.leftLogoUrl = sVal;
-          else if (sType === 'department' && !next.departments.includes(sVal)) next.departments.push(sVal);
-          else if (sType === 'period' && !next.periods.includes(sVal)) next.periods.push(sVal);
-          else if (sType === 'inspector' && !next.inspectors.includes(sVal)) next.inspectors.push(sVal);
-          else if (sType === 'implementer' && !next.implementers.includes(sVal)) next.implementers.push(sVal);
-          continue;
-        }
-        absorbM1Object(row);
-      }
-
-      if (touched) {
-        await saveModuleOneSettings(facilityId, next, tx);
-        summary.module_one_settings_updated++;
-      }
+    if (touched) {
+      await saveModuleOneSettings(facilityId, next, db);
+      summary.module_one_settings_updated++;
     }
+  }
 
-    // 1B-2. Module Two Settings (البرنامج التدريبي)
-    for (const entry of tables.filter((t) => t.target === 'module_two_settings')) {
-      const next = await getOrCreateModuleTwoSettings(facilityId, tx);
-      const settingsList = [...(next.settings || [])];
-      const singletonTypes = new Set([
-        'Hospital_Name',
-        'Hospital_Logo',
-        'Hospital_Logo_Left',
-        'IC_Manager_Title',
-        'IC_Manager_Name',
-        'Hospital_Manager_Title',
-        'Hospital_Manager_Name',
-      ]);
-      const setSetting = (type: string, value: string) => {
-        if (singletonTypes.has(type)) {
-          const idx = settingsList.findIndex((s) => s.Type === type);
-          if (idx >= 0) settingsList[idx] = { ...settingsList[idx], Value: value };
-          else settingsList.push({ ID: `set-${crypto.randomUUID().slice(0, 8)}`, Type: type, Value: value });
-        } else if (!settingsList.some((s) => s.Type === type && s.Value.trim() === value.trim())) {
-          settingsList.push({ ID: `set-${crypto.randomUUID().slice(0, 8)}`, Type: type, Value: value });
-        }
-      };
+  // 1B-2. Module Two Settings (البرنامج التدريبي)
+  for (const entry of tables.filter((t) => t.target === 'module_two_settings')) {
+    const next = await getOrCreateModuleTwoSettings(facilityId, db);
+    const settingsList = [...(next.settings || [])];
+    const singletonTypes = new Set([
+      'Hospital_Name',
+      'Hospital_Logo',
+      'Hospital_Logo_Left',
+      'IC_Manager_Title',
+      'IC_Manager_Name',
+      'Hospital_Manager_Title',
+      'Hospital_Manager_Name',
+    ]);
+    const setSetting = (type: string, value: string) => {
+      if (singletonTypes.has(type)) {
+        const idx = settingsList.findIndex((s) => s.Type === type);
+        if (idx >= 0) settingsList[idx] = { ...settingsList[idx], Value: value };
+        else settingsList.push({ ID: `set-${crypto.randomUUID().slice(0, 8)}`, Type: type, Value: value });
+      } else if (!settingsList.some((s) => s.Type === type && s.Value.trim() === value.trim())) {
+        settingsList.push({ ID: `set-${crypto.randomUUID().slice(0, 8)}`, Type: type, Value: value });
+      }
+    };
 
-      let categories = [...(next.categories || [])];
-      let employees = Array.isArray(next.employees) ? [...next.employees] : [];
-      let touched = false;
+    let categories = [...(next.categories || [])];
+    let employees = Array.isArray(next.employees) ? [...next.employees] : [];
+    let touched = false;
 
-      for (const row of entry.rows) {
-        const rawJson = row.data_json ?? row.settings_json ?? row.payload;
-        if (rawJson !== undefined) {
-          const parsed = parseJsonOrArrayField(rawJson);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            const pObj = parsed as Partial<ModuleTwoSettingsPayload>;
-            if (Array.isArray(pObj.settings)) {
-              for (const s of pObj.settings) {
-                if (s?.Type && s.Value !== undefined) {
-                  setSetting(String(s.Type), String(s.Value));
-                  touched = true;
-                }
+    for (const row of entry.rows) {
+      const rawJson = row.data_json ?? row.settings_json ?? row.payload;
+      if (rawJson !== undefined) {
+        const parsed = parseJsonOrArrayField(rawJson);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const pObj = parsed as Partial<ModuleTwoSettingsPayload>;
+          if (Array.isArray(pObj.settings)) {
+            for (const s of pObj.settings) {
+              if (s?.Type && s.Value !== undefined) {
+                setSetting(String(s.Type), String(s.Value));
+                touched = true;
               }
             }
-            if (Array.isArray(pObj.categories)) {
-              categories = Array.from(new Set([...categories, ...pObj.categories.map(String).filter(Boolean)]));
-              touched = true;
-            }
-            if (Array.isArray(pObj.employees)) {
-              for (const emp of pObj.employees) {
-                if (emp?.Name && !employees.some((e) => e.Name.trim() === emp.Name.trim())) {
-                  employees.push(emp);
-                }
-              }
-              touched = true;
-            }
           }
-        }
-
-        const sType = pickStr(row, ['Type', 'type', 'key', 'setting_key']);
-        const sVal = pickStr(row, ['Value', 'value', 'val', 'setting_value']);
-        if (sType && sVal !== '') {
-          setSetting(sType, sVal);
-          if (sType === 'Category' && !categories.includes(sVal)) categories.push(sVal);
-          touched = true;
-          continue;
-        }
-
-        const hName = pickStr(row, ['hospitalName', 'hospital_name', 'Hospital_Name']);
-        const hLogo = pickStr(row, ['Hospital_Logo', 'rightLogoUrl', 'right_logo_url']);
-        const hLogoLeft = pickStr(row, ['Hospital_Logo_Left', 'leftLogoUrl', 'left_logo_url']);
-        const icT = pickStr(row, ['IC_Manager_Title', 'ic_manager_title']);
-        const icN = pickStr(row, ['IC_Manager_Name', 'ic_supervisor']);
-        const hmT = pickStr(row, ['Hospital_Manager_Title', 'hospital_manager_title']);
-        const hmN = pickStr(row, ['Hospital_Manager_Name', 'hospital_director']);
-        if (hName) { setSetting('Hospital_Name', hName); touched = true; }
-        if (hLogo) { setSetting('Hospital_Logo', hLogo); touched = true; }
-        if (hLogoLeft) { setSetting('Hospital_Logo_Left', hLogoLeft); touched = true; }
-        if (icT) { setSetting('IC_Manager_Title', icT); touched = true; }
-        if (icN) { setSetting('IC_Manager_Name', icN); touched = true; }
-        if (hmT) { setSetting('Hospital_Manager_Title', hmT); touched = true; }
-        if (hmN) { setSetting('Hospital_Manager_Name', hmN); touched = true; }
-
-        const polVal = parseJsonOrArrayField(row.policies);
-        if (Array.isArray(polVal)) {
-          for (const p of polVal) if (String(p).trim()) { setSetting('Policy', String(p).trim()); touched = true; }
-        }
-        const trnVal = parseJsonOrArrayField(row.trainers);
-        if (Array.isArray(trnVal)) {
-          for (const t of trnVal) if (String(t).trim()) { setSetting('Trainer', String(t).trim()); touched = true; }
-        }
-        const catVal = parseJsonOrArrayField(row.categories);
-        if (Array.isArray(catVal)) {
-          for (const c of catVal) {
-            const clean = String(c).trim();
-            if (clean) {
-              setSetting('Category', clean);
-              if (!categories.includes(clean)) categories.push(clean);
-              touched = true;
-            }
-          }
-        }
-      }
-
-      if (touched) {
-        await saveModuleTwoSettings(facilityId, { settings: settingsList, categories, employees }, tx);
-        summary.module_two_settings_updated++;
-      }
-    }
-
-    // 1B-3. Module Three Settings (إحصائية غسيل الأيدي)
-    for (const entry of tables.filter((t) => t.target === 'module_three_settings')) {
-      const next = await getOrCreateModuleThreeSettings(facilityId, tx);
-      let touched = false;
-
-      const absorbHhObj = (obj: Record<string, unknown>) => {
-        const h1 = pickStr(obj, ['header1']);
-        const h2 = pickStr(obj, ['header2']);
-        const h3 = pickStr(obj, ['header3']);
-        const lr = pickStr(obj, ['logoRight', 'rightLogoUrl', 'right_logo_url']);
-        const ll = pickStr(obj, ['logoLeft', 'leftLogoUrl', 'left_logo_url']);
-        if (h1) { next.header1 = h1; touched = true; }
-        if (h2) { next.header2 = h2; touched = true; }
-        if (h3) { next.header3 = h3; touched = true; }
-        if (lr) { next.logoRight = lr; touched = true; }
-        if (ll) { next.logoLeft = ll; touched = true; }
-
-        const mergeArr = (field: 'services' | 'wards' | 'departments' | 'observers' | 'cities' | 'profCategories', raw: unknown) => {
-          const parsed = parseJsonOrArrayField(raw);
-          if (Array.isArray(parsed)) {
-            next[field] = Array.from(new Set([...next[field], ...parsed.map(String).filter(Boolean)]));
+          if (Array.isArray(pObj.categories)) {
+            categories = Array.from(new Set([...categories, ...pObj.categories.map(String).filter(Boolean)]));
             touched = true;
           }
-        };
-        mergeArr('services', obj.services);
-        mergeArr('wards', obj.wards);
-        mergeArr('departments', obj.departments);
-        mergeArr('observers', obj.observers);
-        mergeArr('cities', obj.cities);
-        mergeArr('profCategories', obj.profCategories);
-      };
-
-      for (const row of entry.rows) {
-        const rawJson = row.settings_json ?? row.payload ?? row.data_json;
-        if (rawJson !== undefined) {
-          const parsed = parseJsonOrArrayField(rawJson);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            absorbHhObj(parsed as Record<string, unknown>);
+          if (Array.isArray(pObj.employees)) {
+            for (const emp of pObj.employees) {
+              if (emp?.Name && !employees.some((e) => e.Name.trim() === emp.Name.trim())) {
+                employees.push(emp);
+              }
+            }
+            touched = true;
           }
         }
-        const sType = pickStr(row, ['Type', 'type', 'key', 'setting_key']);
-        const sVal = pickStr(row, ['Value', 'value', 'val', 'setting_value']);
-        if (sType && sVal) {
+      }
+
+      const sType = pickStr(row, ['Type', 'type', 'key', 'setting_key']);
+      const sVal = pickStr(row, ['Value', 'value', 'val', 'setting_value']);
+      if (sType && sVal !== '') {
+        setSetting(sType, sVal);
+        if (sType === 'Category' && !categories.includes(sVal)) categories.push(sVal);
+        touched = true;
+        continue;
+      }
+
+      const hName = pickStr(row, ['hospitalName', 'hospital_name', 'Hospital_Name']);
+      const hLogo = pickStr(row, ['Hospital_Logo', 'rightLogoUrl', 'right_logo_url']);
+      const hLogoLeft = pickStr(row, ['Hospital_Logo_Left', 'leftLogoUrl', 'left_logo_url']);
+      const icT = pickStr(row, ['IC_Manager_Title', 'ic_manager_title']);
+      const icN = pickStr(row, ['IC_Manager_Name', 'ic_supervisor']);
+      const hmT = pickStr(row, ['Hospital_Manager_Title', 'hospital_manager_title']);
+      const hmN = pickStr(row, ['Hospital_Manager_Name', 'hospital_director']);
+      if (hName) { setSetting('Hospital_Name', hName); touched = true; }
+      if (hLogo) { setSetting('Hospital_Logo', hLogo); touched = true; }
+      if (hLogoLeft) { setSetting('Hospital_Logo_Left', hLogoLeft); touched = true; }
+      if (icT) { setSetting('IC_Manager_Title', icT); touched = true; }
+      if (icN) { setSetting('IC_Manager_Name', icN); touched = true; }
+      if (hmT) { setSetting('Hospital_Manager_Title', hmT); touched = true; }
+      if (hmN) { setSetting('Hospital_Manager_Name', hmN); touched = true; }
+
+      const polVal = parseJsonOrArrayField(row.policies);
+      if (Array.isArray(polVal)) {
+        for (const p of polVal) if (String(p).trim()) { setSetting('Policy', String(p).trim()); touched = true; }
+      }
+      const trnVal = parseJsonOrArrayField(row.trainers);
+      if (Array.isArray(trnVal)) {
+        for (const t of trnVal) if (String(t).trim()) { setSetting('Trainer', String(t).trim()); touched = true; }
+      }
+      const catVal = parseJsonOrArrayField(row.categories);
+      if (Array.isArray(catVal)) {
+        for (const c of catVal) {
+          const clean = String(c).trim();
+          if (clean) {
+            setSetting('Category', clean);
+            if (!categories.includes(clean)) categories.push(clean);
+            touched = true;
+          }
+        }
+      }
+    }
+
+    if (touched) {
+      await saveModuleTwoSettings(facilityId, { settings: settingsList, categories, employees }, db);
+      summary.module_two_settings_updated++;
+    }
+  }
+
+  // 1B-3. Module Three Settings (إحصائية غسيل الأيدي)
+  for (const entry of tables.filter((t) => t.target === 'module_three_settings')) {
+    const next = await getOrCreateModuleThreeSettings(facilityId, db);
+    let touched = false;
+
+    const absorbHhObj = (obj: Record<string, unknown>) => {
+      const h1 = pickStr(obj, ['header1', 'Header 1']);
+      const h2 = pickStr(obj, ['header2', 'Header 2']);
+      const h3 = pickStr(obj, ['header3', 'Header 3']);
+      const lr = pickStr(obj, ['logoRight', 'Logo Right', 'rightLogoUrl', 'right_logo_url']);
+      const ll = pickStr(obj, ['logoLeft', 'Logo Left', 'leftLogoUrl', 'left_logo_url']);
+      if (h1) { next.header1 = h1; touched = true; }
+      if (h2) { next.header2 = h2; touched = true; }
+      if (h3) { next.header3 = h3; touched = true; }
+      if (lr) { next.logoRight = lr; touched = true; }
+      if (ll) { next.logoLeft = ll; touched = true; }
+
+      const mergeArr = (field: 'services' | 'wards' | 'departments' | 'observers' | 'cities' | 'profCategories', raw: unknown) => {
+        const parsed = parseJsonOrArrayField(raw);
+        if (Array.isArray(parsed)) {
+          next[field] = Array.from(new Set([...next[field], ...parsed.map(String).filter(Boolean)]));
           touched = true;
-          if (sType === 'header1') next.header1 = sVal;
-          else if (sType === 'header2') next.header2 = sVal;
-          else if (sType === 'header3') next.header3 = sVal;
-          else if (sType === 'logoRight') next.logoRight = sVal;
-          else if (sType === 'logoLeft') next.logoLeft = sVal;
-          else if (sType === 'Service' && !next.services.includes(sVal)) next.services.push(sVal);
-          else if (sType === 'Ward' && !next.wards.includes(sVal)) next.wards.push(sVal);
-          else if (sType === 'Department' && !next.departments.includes(sVal)) next.departments.push(sVal);
-          else if (sType === 'Observer' && !next.observers.includes(sVal)) next.observers.push(sVal);
-          else if (sType === 'City' && !next.cities.includes(sVal)) next.cities.push(sVal);
-          else if (sType === 'ProfCategory' && !next.profCategories.includes(sVal)) next.profCategories.push(sVal);
+        }
+      };
+      mergeArr('services', obj.services ?? obj.Services);
+      mergeArr('wards', obj.wards ?? obj.Wards);
+      mergeArr('departments', obj.departments ?? obj.Departments);
+      mergeArr('observers', obj.observers ?? obj.Observers);
+      mergeArr('cities', obj.cities ?? obj.Cities);
+      mergeArr('profCategories', obj.profCategories ?? obj.ProfCategories);
+    };
+
+    for (const row of entry.rows) {
+      const rawJson = row.settings_json ?? row.payload ?? row.data_json;
+      if (rawJson !== undefined) {
+        const parsed = parseJsonOrArrayField(rawJson);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          absorbHhObj(parsed as Record<string, unknown>);
+        }
+      }
+      const sType = pickStr(row, ['Type', 'type', 'key', 'setting_key']);
+      const sVal = pickStr(row, ['Value', 'value', 'val', 'setting_value']);
+      if (sType && sVal) {
+        touched = true;
+        if (sType === 'header1') next.header1 = sVal;
+        else if (sType === 'header2') next.header2 = sVal;
+        else if (sType === 'header3') next.header3 = sVal;
+        else if (sType === 'logoRight') next.logoRight = sVal;
+        else if (sType === 'logoLeft') next.logoLeft = sVal;
+        else if (sType === 'Service' && !next.services.includes(sVal)) next.services.push(sVal);
+        else if (sType === 'Ward' && !next.wards.includes(sVal)) next.wards.push(sVal);
+        else if (sType === 'Department' && !next.departments.includes(sVal)) next.departments.push(sVal);
+        else if (sType === 'Observer' && !next.observers.includes(sVal)) next.observers.push(sVal);
+        else if (sType === 'City' && !next.cities.includes(sVal)) next.cities.push(sVal);
+        else if (sType === 'ProfCategory' && !next.profCategories.includes(sVal)) next.profCategories.push(sVal);
+        continue;
+      }
+      absorbHhObj(row);
+    }
+
+    if (touched) {
+      await saveModuleThreeSettings(facilityId, next, db);
+      summary.module_three_settings_updated++;
+    }
+  }
+
+  summary.settings_updated =
+    summary.module_one_settings_updated +
+    summary.module_two_settings_updated +
+    summary.module_three_settings_updated;
+
+  // 1C. Departments (Always generate new UUID, dedup by normalized name within facility_id)
+  for (const entry of tables.filter((t) => t.target === 'departments')) {
+    for (const row of entry.rows) {
+      const cleanName = pickStr(row, ['name', 'Name', 'department', 'Department', 'dept_name']);
+      if (!cleanName) continue;
+      const legacyId = pickStr(row, ['id', 'ID', 'legacy_id']);
+      const normName = cleanName.toLowerCase();
+      const deptType = pickStr(row, ['type', 'Type', 'category'], 'إكلينيكي');
+
+      const existingId = deptByName.get(normName);
+      if (existingId) {
+        summary.duplicates_skipped++;
+        if (legacyId) deptByLegacyId.set(legacyId, existingId);
+      } else {
+        const newUuid = `dep-${crypto.randomUUID()}`;
+        phase1Statements.push({
+          sql: 'INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)',
+          args: [newUuid, facilityId, cleanName, deptType],
+        });
+        deptByName.set(normName, newUuid);
+        if (legacyId) deptByLegacyId.set(legacyId, newUuid);
+        summary.departments_upserted++;
+      }
+    }
+  }
+
+  // 1D. Staff (Always generate new UUID, dedup by normalized employee_code OR full name within facility_id)
+  for (const entry of tables.filter((t) => t.target === 'staff')) {
+    const fallbackDept = ensureFallbackDeptId();
+    for (const row of entry.rows) {
+      const cleanName = pickStr(row, ['name', 'Name', 'full_name', 'employee_name']);
+      if (!cleanName) continue;
+      const legacyId = pickStr(row, ['id', 'ID', 'legacy_id']);
+      const rawCode = pickStr(row, ['employee_code', 'code', 'Code', 'emp_code', 'ID', 'id']);
+      const normName = cleanName.toLowerCase();
+      const normCode = rawCode
+        ? rawCode.toUpperCase()
+        : `MIG-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+
+      const rawDeptId = pickStr(row, ['department_id', 'dept_id']);
+      const rawDeptName = pickStr(row, ['department_name', 'department', 'Department', 'Job', 'job']);
+      let resolvedDeptId =
+        (rawDeptId && deptByLegacyId.get(rawDeptId)) ||
+        (rawDeptName && deptByName.get(rawDeptName.toLowerCase())) ||
+        '';
+
+      if (!resolvedDeptId && rawDeptName) {
+        const autoDeptUuid = `dep-${crypto.randomUUID()}`;
+        phase1Statements.push({
+          sql: 'INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)',
+          args: [autoDeptUuid, facilityId, rawDeptName, 'إكلينيكي'],
+        });
+        deptByName.set(rawDeptName.toLowerCase(), autoDeptUuid);
+        resolvedDeptId = autoDeptUuid;
+        summary.departments_upserted++;
+      }
+      if (!resolvedDeptId) resolvedDeptId = fallbackDept;
+
+      const existingId = staffByName.get(normName) || staffByCode.get(normCode);
+      const category = pickStr(row, ['category', 'Category'], 'تمريض');
+
+      if (existingId) {
+        summary.duplicates_skipped++;
+        if (legacyId) staffByLegacyId.set(legacyId, existingId);
+      } else {
+        const uniqueCode = staffByCode.has(normCode)
+          ? `${normCode}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`
+          : normCode;
+        const newUuid = `stf-${crypto.randomUUID()}`;
+        phase1Statements.push({
+          sql: 'INSERT INTO facility_staff (id, facility_id, name, employee_code, category, department_id) VALUES (?, ?, ?, ?, ?, ?)',
+          args: [newUuid, facilityId, cleanName, uniqueCode, category, resolvedDeptId],
+        });
+        staffByName.set(normName, newUuid);
+        staffByCode.set(uniqueCode, newUuid);
+        if (legacyId) staffByLegacyId.set(legacyId, newUuid);
+        summary.staff_upserted++;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------------
+  // PHASE 2: MODULE RECORDS (NEW UUID + legacy_id PRESERVED + IN-MEMORY DEDUP)
+  // ------------------------------------------------------------------------
+  const fallbackDept = ensureFallbackDeptId();
+  const firstStaffId = Array.from(staffByName.values())[0] || 'unassigned';
+
+  const checkAndMarkLegacy = (set: Set<string>, legacyId: string | null): boolean => {
+    if (!legacyId) return false;
+    if (set.has(legacyId)) return true;
+    set.add(legacyId);
+    return false;
+  };
+
+  const resolveDept = (rawId: string, rawName: string): string => {
+    if (rawId && deptByLegacyId.get(rawId)) return deptByLegacyId.get(rawId)!;
+    if (rawName && deptByName.get(rawName.toLowerCase())) return deptByName.get(rawName.toLowerCase())!;
+    if (rawName) {
+      const newUuid = `dep-${crypto.randomUUID()}`;
+      phase1Statements.push({
+        sql: 'INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)',
+        args: [newUuid, facilityId, rawName, 'إكلينيكي'],
+      });
+      deptByName.set(rawName.toLowerCase(), newUuid);
+      summary.departments_upserted++;
+      return newUuid;
+    }
+    return fallbackDept;
+  };
+
+  const m1InsertSql = `INSERT INTO module_one_records
+       (id, facility_id, staff_id, department_id, legacy_id, created_by, payload, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+  // 2A. Module One Records (supports both portal module_one_records and flat legacy `reports` rows)
+  for (const entry of tables.filter((t) => t.target === 'module_one')) {
+    const flatGroups = new Map<
+      string,
+      {
+        legacyIds: string[];
+        date: string;
+        period: string;
+        department: string;
+        inspector: string;
+        supervisor: string;
+        evaluations: Array<{ procedure: string; status: string; note: string; rec: string }>;
+      }
+    >();
+
+    for (const row of entry.rows) {
+      const legacyId = pickStr(row, ['legacy_id', 'id', 'ID']);
+      if (row.payload !== undefined) {
+        if (checkAndMarkLegacy(existingM1Legacy, legacyId || null)) {
+          summary.duplicates_skipped++;
           continue;
         }
-        absorbHhObj(row);
-      }
-
-      if (touched) {
-        await saveModuleThreeSettings(facilityId, next, tx);
-        summary.module_three_settings_updated++;
-      }
-    }
-
-    summary.settings_updated =
-      summary.module_one_settings_updated +
-      summary.module_two_settings_updated +
-      summary.module_three_settings_updated;
-
-    // 1C. Departments (Always generate new UUID, dedup by normalized name within facility_id)
-    for (const entry of tables.filter((t) => t.target === 'departments')) {
-      for (const row of entry.rows) {
-        const cleanName = pickStr(row, ['name', 'Name', 'department', 'Department', 'dept_name']);
-        if (!cleanName) continue;
-        const legacyId = pickStr(row, ['id', 'ID', 'legacy_id']);
-        const normName = cleanName.toLowerCase();
-        const deptType = pickStr(row, ['type', 'Type', 'category'], 'إكلينيكي');
-
-        const existingId = deptByName.get(normName);
-        if (existingId) {
-          summary.duplicates_skipped++;
-          if (legacyId) deptByLegacyId.set(legacyId, existingId);
-        } else {
-          const newUuid = `dep-${crypto.randomUUID()}`;
-          await tx.run('INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)', [
-            newUuid,
-            facilityId,
-            cleanName,
-            deptType,
-          ]);
-          deptByName.set(normName, newUuid);
-          if (legacyId) deptByLegacyId.set(legacyId, newUuid);
-          summary.departments_upserted++;
-        }
-      }
-    }
-
-    // 1D. Staff (Always generate new UUID, dedup by normalized employee_code OR full name within facility_id)
-    for (const entry of tables.filter((t) => t.target === 'staff')) {
-      const fallbackDept = await ensureFallbackDeptId();
-      for (const row of entry.rows) {
-        const cleanName = pickStr(row, ['name', 'Name', 'full_name', 'employee_name']);
-        if (!cleanName) continue;
-        const legacyId = pickStr(row, ['id', 'ID', 'legacy_id']);
-        const rawCode = pickStr(row, ['employee_code', 'code', 'Code', 'emp_code', 'ID', 'id']);
-        const normName = cleanName.toLowerCase();
-        const normCode = rawCode
-          ? rawCode.toUpperCase()
-          : `MIG-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
-
-        const rawDeptId = pickStr(row, ['department_id', 'dept_id']);
-        const rawDeptName = pickStr(row, ['department_name', 'department', 'Department', 'Job', 'job']);
-        let resolvedDeptId =
-          (rawDeptId && deptByLegacyId.get(rawDeptId)) ||
-          (rawDeptName && deptByName.get(rawDeptName.toLowerCase())) ||
-          '';
-
-        if (!resolvedDeptId && rawDeptName) {
-          const autoDeptUuid = `dep-${crypto.randomUUID()}`;
-          await tx.run('INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)', [
-            autoDeptUuid,
-            facilityId,
-            rawDeptName,
-            'إكلينيكي',
-          ]);
-          deptByName.set(rawDeptName.toLowerCase(), autoDeptUuid);
-          resolvedDeptId = autoDeptUuid;
-          summary.departments_upserted++;
-        }
-        if (!resolvedDeptId) resolvedDeptId = fallbackDept;
-
-        const existingId = staffByName.get(normName) || staffByCode.get(normCode);
-        const category = pickStr(row, ['category', 'Category'], 'تمريض');
-
-        if (existingId) {
-          summary.duplicates_skipped++;
-          if (legacyId) staffByLegacyId.set(legacyId, existingId);
-        } else {
-          const uniqueCode = staffByCode.has(normCode)
-            ? `${normCode}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`
-            : normCode;
-          const newUuid = `stf-${crypto.randomUUID()}`;
-          await tx.run(
-            'INSERT INTO facility_staff (id, facility_id, name, employee_code, category, department_id) VALUES (?, ?, ?, ?, ?, ?)',
-            [newUuid, facilityId, cleanName, uniqueCode, category, resolvedDeptId]
-          );
-          staffByName.set(normName, newUuid);
-          staffByCode.set(uniqueCode, newUuid);
-          if (legacyId) staffByLegacyId.set(legacyId, newUuid);
-          summary.staff_upserted++;
-        }
-      }
-    }
-
-    // ------------------------------------------------------------------------
-    // PHASE 2: MODULE RECORDS (NEW UUID + legacy_id PRESERVED + DEDUP)
-    // ------------------------------------------------------------------------
-    const fallbackDept = await ensureFallbackDeptId();
-    const firstStaffId = Array.from(staffByName.values())[0] || 'unassigned';
-
-    // Helper: check legacy_id already migrated for this facility
-    const isDuplicateLegacy = async (table: string, legacyId: string | null): Promise<boolean> => {
-      if (!legacyId) return false;
-      const hit = await tx.get(
-        `SELECT id FROM ${table} WHERE facility_id = ? AND legacy_id = ? LIMIT 1`,
-        [facilityId, legacyId]
-      );
-      return Boolean(hit);
-    };
-
-    const resolveDept = async (rawId: string, rawName: string): Promise<string> => {
-      if (rawId && deptByLegacyId.get(rawId)) return deptByLegacyId.get(rawId)!;
-      if (rawName && deptByName.get(rawName.toLowerCase())) return deptByName.get(rawName.toLowerCase())!;
-      if (rawName) {
-        const newUuid = `dep-${crypto.randomUUID()}`;
-        await tx.run('INSERT INTO facility_departments (id, facility_id, name, type) VALUES (?, ?, ?, ?)', [
-          newUuid,
-          facilityId,
-          rawName,
-          'إكلينيكي',
-        ]);
-        deptByName.set(rawName.toLowerCase(), newUuid);
-        summary.departments_upserted++;
-        return newUuid;
-      }
-      return fallbackDept;
-    };
-
-    const m1InsertSql = `INSERT INTO module_one_records
-         (id, facility_id, staff_id, department_id, legacy_id, created_by, payload, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-    // 2A. Module One Records (supports both portal module_one_records and flat legacy `reports` rows)
-    for (const entry of tables.filter((t) => t.target === 'module_one')) {
-      const flatGroups = new Map<
-        string,
-        {
-          legacyIds: string[];
-          date: string;
-          period: string;
-          department: string;
-          inspector: string;
-          supervisor: string;
-          evaluations: Array<{ procedure: string; status: string; note: string; rec: string }>;
-        }
-      >();
-
-      for (const row of entry.rows) {
-        const legacyId = pickStr(row, ['legacy_id', 'id', 'ID']);
-        if (row.payload !== undefined) {
-          if (await isDuplicateLegacy('module_one_records', legacyId || null)) {
-            summary.duplicates_skipped++;
-            continue;
-          }
-          const payloadObj =
-            typeof row.payload === 'string'
-              ? (JSON.parse(row.payload) as Record<string, unknown>)
-              : (row.payload as Record<string, unknown>);
-          const staffId =
-            staffByLegacyId.get(String(row.staff_id || '')) ||
-            staffByName.get(String(payloadObj?.inspector || '').trim().toLowerCase()) ||
-            firstStaffId;
-          const deptId = await resolveDept(
-            String(row.department_id || ''),
-            String(payloadObj?.department || '')
-          );
-          await tx.run(m1InsertSql, [
+        const payloadObj =
+          typeof row.payload === 'string'
+            ? (JSON.parse(row.payload) as Record<string, unknown>)
+            : (row.payload as Record<string, unknown>);
+        const staffId =
+          staffByLegacyId.get(String(row.staff_id || '')) ||
+          staffByName.get(String(payloadObj?.inspector || '').trim().toLowerCase()) ||
+          firstStaffId;
+        const deptId = resolveDept(
+          String(row.department_id || ''),
+          String(payloadObj?.department || '')
+        );
+        phase2Statements.push({
+          sql: m1InsertSql,
+          args: [
             `m1-${crypto.randomUUID()}`,
             facilityId,
             staffId,
@@ -4391,44 +4414,47 @@ async function executeSmartMigration(
             JSON.stringify(payloadObj),
             String(row.status || 'completed'),
             String(row.created_at || new Date().toISOString()),
-          ]);
-          summary.module_one_upserted++;
-        } else {
-          const date = pickStr(row, ['date', 'Date', 'report_date'], new Date().toISOString().slice(0, 10));
-          const period = pickStr(row, ['period', 'Period'], 'صباحي');
-          const department = pickStr(row, ['department', 'Department', 'dept'], 'عام');
-          const inspector = pickStr(row, ['inspector', 'Inspector'], '-');
-          const supervisor = pickStr(row, ['supervisor', 'Supervisor'], '-');
-          const procedure = pickStr(row, ['procedure', 'Procedure', 'note', 'Note'], 'إجراء تقييم');
-          const statusVal = pickStr(row, ['status', 'Status'], 'Yes') === 'No' ? 'No' : 'Yes';
-          const note = pickStr(row, ['note', 'Note']);
-          const rec = pickStr(row, ['rec', 'Rec', 'recommendation']);
-          const gKey = `${date}||${period}||${department}||${inspector}`;
-          const grp = flatGroups.get(gKey) || {
-            legacyIds: [],
-            date,
-            period,
-            department,
-            inspector,
-            supervisor,
-            evaluations: [],
-          };
-          if (legacyId) grp.legacyIds.push(legacyId);
-          grp.evaluations.push({ procedure, status: statusVal, note, rec });
-          flatGroups.set(gKey, grp);
-        }
+          ],
+        });
+        summary.module_one_upserted++;
+      } else {
+        const date = pickStr(row, ['date', 'Date', 'report_date'], new Date().toISOString().slice(0, 10));
+        const period = pickStr(row, ['period', 'Period'], 'صباحي');
+        const department = pickStr(row, ['department', 'Department', 'dept'], 'عام');
+        const inspector = pickStr(row, ['inspector', 'Inspector'], '-');
+        const supervisor = pickStr(row, ['supervisor', 'Supervisor'], '-');
+        const procedure = pickStr(row, ['procedure', 'Procedure', 'note', 'Note'], 'إجراء تقييم');
+        const statusVal = pickStr(row, ['status', 'Status'], 'Yes') === 'No' ? 'No' : 'Yes';
+        const note = pickStr(row, ['note', 'Note']);
+        const rec = pickStr(row, ['rec', 'Rec', 'recommendation']);
+        const gKey = `${date}||${period}||${department}||${inspector}`;
+        const grp = flatGroups.get(gKey) || {
+          legacyIds: [],
+          date,
+          period,
+          department,
+          inspector,
+          supervisor,
+          evaluations: [],
+        };
+        if (legacyId) grp.legacyIds.push(legacyId);
+        grp.evaluations.push({ procedure, status: statusVal, note, rec });
+        flatGroups.set(gKey, grp);
       }
+    }
 
-      for (const [gKey, grp] of flatGroups.entries()) {
-        const grpLegacyId = grp.legacyIds[0] || `rpt-${gKey}`;
-        if (await isDuplicateLegacy('module_one_records', grpLegacyId)) {
-          summary.duplicates_skipped++;
-          continue;
-        }
-        const deptId = await resolveDept('', grp.department);
-        const staffId = staffByName.get(grp.inspector.toLowerCase()) || firstStaffId;
-        const hasNo = grp.evaluations.some((e) => e.status === 'No');
-        await tx.run(m1InsertSql, [
+    for (const [gKey, grp] of flatGroups.entries()) {
+      const grpLegacyId = grp.legacyIds[0] || `rpt-${gKey}`;
+      if (checkAndMarkLegacy(existingM1Legacy, grpLegacyId)) {
+        summary.duplicates_skipped++;
+        continue;
+      }
+      const deptId = resolveDept('', grp.department);
+      const staffId = staffByName.get(grp.inspector.toLowerCase()) || firstStaffId;
+      const hasNo = grp.evaluations.some((e) => e.status === 'No');
+      phase2Statements.push({
+        sql: m1InsertSql,
+        args: [
           `m1-${crypto.randomUUID()}`,
           facilityId,
           staffId,
@@ -4446,29 +4472,32 @@ async function executeSmartMigration(
           }),
           hasNo ? 'pending' : 'completed',
           `${grp.date.split('T')[0]}T10:00:00.000Z`,
-        ]);
-        summary.module_one_upserted++;
-      }
+        ],
+      });
+      summary.module_one_upserted++;
     }
+  }
 
-    // 2B. Module Two Records (supports portal module_two_records + Training `logs` + Training `plan`)
-    const m2InsertSql = `INSERT INTO module_two_records
-         (id, facility_id, department_id, legacy_id, created_by, payload, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-    for (const entry of tables.filter((t) => t.target === 'module_two')) {
-      for (const row of entry.rows) {
-        const legacyId = pickStr(row, ['legacy_id', 'id', 'ID']);
-        if (row.payload !== undefined) {
-          if (await isDuplicateLegacy('module_two_records', legacyId || null)) {
-            summary.duplicates_skipped++;
-            continue;
-          }
-          const payloadObj =
-            typeof row.payload === 'string'
-              ? (JSON.parse(row.payload) as Record<string, unknown>)
-              : (row.payload as Record<string, unknown>);
-          const deptId = await resolveDept(String(row.department_id || ''), '');
-          await tx.run(m2InsertSql, [
+  // 2B. Module Two Records (supports portal module_two_records + Training `logs` + Training `plan`)
+  const m2InsertSql = `INSERT INTO module_two_records
+       (id, facility_id, department_id, legacy_id, created_by, payload, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+  for (const entry of tables.filter((t) => t.target === 'module_two')) {
+    for (const row of entry.rows) {
+      const legacyId = pickStr(row, ['legacy_id', 'id', 'ID']);
+      if (row.payload !== undefined) {
+        if (checkAndMarkLegacy(existingM2Legacy, legacyId || null)) {
+          summary.duplicates_skipped++;
+          continue;
+        }
+        const payloadObj =
+          typeof row.payload === 'string'
+            ? (JSON.parse(row.payload) as Record<string, unknown>)
+            : (row.payload as Record<string, unknown>);
+        const deptId = resolveDept(String(row.department_id || ''), '');
+        phase2Statements.push({
+          sql: m2InsertSql,
+          args: [
             `m2-${crypto.randomUUID()}`,
             facilityId,
             deptId,
@@ -4477,22 +4506,25 @@ async function executeSmartMigration(
             JSON.stringify(payloadObj),
             String(row.status || 'training_log'),
             String(row.created_at || new Date().toISOString()),
-          ]);
-          summary.module_two_upserted++;
-        } else {
-          const traineeName = pickStr(row, ['TraineeName', 'traineeName', 'trainee_name']);
-          const monthVal = pickStr(row, ['Month', 'month']);
-          const policiesVal = pickStr(row, ['Policies', 'policies']);
-          const categoryVal = pickStr(row, ['Category', 'category'], 'تمريض');
-          if (traineeName) {
-            const dateStr = pickStr(row, ['Date', 'date'], new Date().toISOString().slice(0, 10)).split('T')[0];
-            const trainerVal = pickStr(row, ['Trainer', 'trainer'], '-');
-            const effectiveLegacy = legacyId || `trn-${dateStr}-${traineeName}-${categoryVal}`;
-            if (await isDuplicateLegacy('module_two_records', effectiveLegacy)) {
-              summary.duplicates_skipped++;
-              continue;
-            }
-            await tx.run(m2InsertSql, [
+          ],
+        });
+        summary.module_two_upserted++;
+      } else {
+        const traineeName = pickStr(row, ['TraineeName', 'traineeName', 'trainee_name']);
+        const monthVal = pickStr(row, ['Month', 'month']);
+        const policiesVal = pickStr(row, ['Policies', 'policies']);
+        const categoryVal = pickStr(row, ['Category', 'category'], 'تمريض');
+        if (traineeName) {
+          const dateStr = pickStr(row, ['Date', 'date'], new Date().toISOString().slice(0, 10)).split('T')[0];
+          const trainerVal = pickStr(row, ['Trainer', 'trainer'], '-');
+          const effectiveLegacy = legacyId || `trn-${dateStr}-${traineeName}-${categoryVal}`;
+          if (checkAndMarkLegacy(existingM2Legacy, effectiveLegacy)) {
+            summary.duplicates_skipped++;
+            continue;
+          }
+          phase2Statements.push({
+            sql: m2InsertSql,
+            args: [
               `m2-${crypto.randomUUID()}`,
               facilityId,
               fallbackDept,
@@ -4511,16 +4543,19 @@ async function executeSmartMigration(
               }),
               'training_log',
               `${dateStr}T09:00:00.000Z`,
-            ]);
-            summary.module_two_upserted++;
-          } else if (monthVal && policiesVal) {
-            const yearVal = pickStr(row, ['Year', 'year'], String(new Date().getFullYear()));
-            const effectiveLegacy = legacyId || `pln-${yearVal}-${monthVal}-${categoryVal}`;
-            if (await isDuplicateLegacy('module_two_records', effectiveLegacy)) {
-              summary.duplicates_skipped++;
-              continue;
-            }
-            await tx.run(m2InsertSql, [
+            ],
+          });
+          summary.module_two_upserted++;
+        } else if (monthVal && policiesVal) {
+          const yearVal = pickStr(row, ['Year', 'year'], String(new Date().getFullYear()));
+          const effectiveLegacy = legacyId || `pln-${yearVal}-${monthVal}-${categoryVal}`;
+          if (checkAndMarkLegacy(existingM2Legacy, effectiveLegacy)) {
+            summary.duplicates_skipped++;
+            continue;
+          }
+          phase2Statements.push({
+            sql: m2InsertSql,
+            args: [
               `m2-${crypto.randomUUID()}`,
               facilityId,
               fallbackDept,
@@ -4536,37 +4571,40 @@ async function executeSmartMigration(
               }),
               'training_plan',
               new Date().toISOString(),
-            ]);
-            summary.module_two_upserted++;
-          }
+            ],
+          });
+          summary.module_two_upserted++;
         }
       }
     }
+  }
 
-    // 2C. Module Three Records (supports portal module_three_records + flat WHO Hand Hygiene `Observations` rows)
-    const m3InsertSql = `INSERT INTO module_three_records
-         (id, facility_id, department_id, legacy_id, created_by, payload, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
-    for (const entry of tables.filter((t) => t.target === 'module_three')) {
-      const hhGroups = new Map<
-        string,
-        { sessionInfo: HhSessionInfo; profMap: Map<string, HhProfessional> }
-      >();
+  // 2C. Module Three Records (supports portal module_three_records + flat WHO Hand Hygiene `Observations` rows)
+  const m3InsertSql = `INSERT INTO module_three_records
+       (id, facility_id, department_id, legacy_id, created_by, payload, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
+  for (const entry of tables.filter((t) => t.target === 'module_three')) {
+    const hhGroups = new Map<
+      string,
+      { sessionInfo: HhSessionInfo; profMap: Map<string, HhProfessional> }
+    >();
 
-      for (const row of entry.rows) {
-        const legacyId = pickStr(row, ['legacy_id', 'id', 'ID', 'Session ID', 'sessionId', 'session_id']);
-        if (row.payload !== undefined) {
-          if (await isDuplicateLegacy('module_three_records', legacyId || null)) {
-            summary.duplicates_skipped++;
-            continue;
-          }
-          const payloadObj =
-            typeof row.payload === 'string'
-              ? (JSON.parse(row.payload) as Record<string, unknown>)
-              : (row.payload as Record<string, unknown>);
-          const sInfo = payloadObj?.sessionInfo as { department?: string } | undefined;
-          const deptId = await resolveDept(String(row.department_id || ''), String(sInfo?.department || ''));
-          await tx.run(m3InsertSql, [
+    for (const row of entry.rows) {
+      const legacyId = pickStr(row, ['legacy_id', 'id', 'ID', 'Session ID', 'sessionId', 'session_id']);
+      if (row.payload !== undefined) {
+        if (checkAndMarkLegacy(existingM3Legacy, legacyId || null)) {
+          summary.duplicates_skipped++;
+          continue;
+        }
+        const payloadObj =
+          typeof row.payload === 'string'
+            ? (JSON.parse(row.payload) as Record<string, unknown>)
+            : (row.payload as Record<string, unknown>);
+        const sInfo = payloadObj?.sessionInfo as { department?: string } | undefined;
+        const deptId = resolveDept(String(row.department_id || ''), String(sInfo?.department || ''));
+        phase2Statements.push({
+          sql: m3InsertSql,
+          args: [
             `m3-${crypto.randomUUID()}`,
             facilityId,
             deptId,
@@ -4575,18 +4613,21 @@ async function executeSmartMigration(
             JSON.stringify(payloadObj),
             String(row.status || 'hand_hygiene'),
             String(row.created_at || new Date().toISOString()),
-          ]);
-          summary.module_three_upserted++;
-        } else if (row.sessionInfo !== undefined) {
-          const sInfo = row.sessionInfo as HhSessionInfo;
-          const sid = String(sInfo.sessionId || legacyId || `hh-${crypto.randomUUID().slice(0, 8)}`);
-          if (await isDuplicateLegacy('module_three_records', sid)) {
-            summary.duplicates_skipped++;
-            continue;
-          }
-          const deptId = await resolveDept('', String(sInfo.department || ''));
-          const sDate = String(sInfo.date || new Date().toISOString().slice(0, 10));
-          await tx.run(m3InsertSql, [
+          ],
+        });
+        summary.module_three_upserted++;
+      } else if (row.sessionInfo !== undefined) {
+        const sInfo = row.sessionInfo as HhSessionInfo;
+        const sid = String(sInfo.sessionId || legacyId || `hh-${crypto.randomUUID().slice(0, 8)}`);
+        if (checkAndMarkLegacy(existingM3Legacy, sid)) {
+          summary.duplicates_skipped++;
+          continue;
+        }
+        const deptId = resolveDept('', String(sInfo.department || ''));
+        const sDate = String(sInfo.date || new Date().toISOString().slice(0, 10));
+        phase2Statements.push({
+          sql: m3InsertSql,
+          args: [
             `m3-${crypto.randomUUID()}`,
             facilityId,
             deptId,
@@ -4599,72 +4640,75 @@ async function executeSmartMigration(
             }),
             'hand_hygiene',
             `${sDate}T10:00:00.000Z`,
-          ]);
-          summary.module_three_upserted++;
-        } else {
-          const sid = pickStr(row, ['Session ID', 'sessionId', 'session_id'], '');
-          if (!sid) continue;
-          if (!hhGroups.has(sid)) {
-            hhGroups.set(sid, {
-              sessionInfo: {
-                sessionId: sid,
-                facility: pickStr(row, ['Facility', 'facility']),
-                service: pickStr(row, ['Service', 'service']),
-                ward: pickStr(row, ['Ward', 'ward']),
-                department: pickStr(row, ['Department', 'department'], 'عام'),
-                country: pickStr(row, ['Country', 'country'], 'Egypt'),
-                city: pickStr(row, ['City', 'city']),
-                periodNumber: pickStr(row, ['Period Number', 'periodNumber']),
-                date: pickStr(row, ['Session Date', 'date'], new Date().toISOString().slice(0, 10)),
-                startTime: pickStr(row, ['Start Time', 'startTime']),
-                endTime: pickStr(row, ['End Time', 'endTime']),
-                duration: pickStr(row, ['Duration (min)', 'duration']),
-                sessionNumber: pickStr(row, ['Session No', 'sessionNumber']),
-                pageNumber: pickStr(row, ['Page No', 'pageNumber']),
-                observer: pickStr(row, ['Observer', 'observer']),
-              },
-              profMap: new Map(),
-            });
-          }
-          const grp = hhGroups.get(sid)!;
-          const pCode = pickStr(row, ['Prof. Code', 'categoryCode'], '1');
-          const colNoRaw = pickStr(row, ['Column No', 'colNo']);
-          const profKey = colNoRaw ? `col_${colNoRaw}` : `code_${pCode}`;
-          if (!grp.profMap.has(profKey)) {
-            grp.profMap.set(profKey, {
-              categoryCode: pCode,
-              categoryName: pickStr(row, ['Professional Cat.', 'categoryName'], 'أطباء'),
-              _colNo: colNoRaw ? parseInt(colNoRaw, 10) : 1,
-              opportunities: [],
-            });
-          }
-          const indications: string[] = [];
-          if (row['Ind: Bef. Pat'] === 'Yes') indications.push('bef-pat');
-          if (row['Ind: Bef. Asept'] === 'Yes') indications.push('bef-asept');
-          if (row['Ind: Aft. Body Fluid'] === 'Yes') indications.push('aft-bf');
-          if (row['Ind: Aft. Pat'] === 'Yes') indications.push('aft-pat');
-          if (row['Ind: Aft. Surround'] === 'Yes') indications.push('aft-p-surr');
-
-          grp.profMap.get(profKey)!.opportunities.push({
-            number:
-              (row['Opportunity No'] as number | string | undefined) ||
-              grp.profMap.get(profKey)!.opportunities.length + 1,
-            indications,
-            action: pickStr(row, ['Action (HR/HW/Missed)', 'action'], 'Missed'),
-            gloves: row['Gloves Used'] === 'Yes',
+          ],
+        });
+        summary.module_three_upserted++;
+      } else {
+        const sid = pickStr(row, ['Session ID', 'sessionId', 'session_id'], '');
+        if (!sid) continue;
+        if (!hhGroups.has(sid)) {
+          hhGroups.set(sid, {
+            sessionInfo: {
+              sessionId: sid,
+              facility: pickStr(row, ['Facility', 'facility']),
+              service: pickStr(row, ['Service', 'service']),
+              ward: pickStr(row, ['Ward', 'ward']),
+              department: pickStr(row, ['Department', 'department'], 'عام'),
+              country: pickStr(row, ['Country', 'country'], 'Egypt'),
+              city: pickStr(row, ['City', 'city']),
+              periodNumber: pickStr(row, ['Period Number', 'periodNumber']),
+              date: pickStr(row, ['Session Date', 'date'], new Date().toISOString().slice(0, 10)),
+              startTime: pickStr(row, ['Start Time', 'startTime']),
+              endTime: pickStr(row, ['End Time', 'endTime']),
+              duration: pickStr(row, ['Duration (min)', 'duration']),
+              sessionNumber: pickStr(row, ['Session No', 'sessionNumber']),
+              pageNumber: pickStr(row, ['Page No', 'pageNumber']),
+              observer: pickStr(row, ['Observer', 'observer']),
+            },
+            profMap: new Map(),
           });
         }
-      }
-
-      for (const [sid, grp] of hhGroups.entries()) {
-        if (await isDuplicateLegacy('module_three_records', sid)) {
-          summary.duplicates_skipped++;
-          continue;
+        const grp = hhGroups.get(sid)!;
+        const pCode = pickStr(row, ['Prof. Code', 'categoryCode'], '1');
+        const colNoRaw = pickStr(row, ['Column No', 'colNo']);
+        const profKey = colNoRaw ? `col_${colNoRaw}` : `code_${pCode}`;
+        if (!grp.profMap.has(profKey)) {
+          grp.profMap.set(profKey, {
+            categoryCode: pCode,
+            categoryName: pickStr(row, ['Professional Cat.', 'categoryName'], 'أطباء'),
+            _colNo: colNoRaw ? parseInt(colNoRaw, 10) : 1,
+            opportunities: [],
+          });
         }
-        const deptId = await resolveDept('', String(grp.sessionInfo.department || ''));
-        const profs = Array.from(grp.profMap.values()).sort((a, b) => (a._colNo || 999) - (b._colNo || 999));
-        const sDate = String(grp.sessionInfo.date || new Date().toISOString().slice(0, 10));
-        await tx.run(m3InsertSql, [
+        const indications: string[] = [];
+        if (row['Ind: Bef. Pat'] === 'Yes') indications.push('bef-pat');
+        if (row['Ind: Bef. Asept'] === 'Yes') indications.push('bef-asept');
+        if (row['Ind: Aft. Body Fluid'] === 'Yes') indications.push('aft-bf');
+        if (row['Ind: Aft. Pat'] === 'Yes') indications.push('aft-pat');
+        if (row['Ind: Aft. Surround'] === 'Yes') indications.push('aft-p-surr');
+
+        grp.profMap.get(profKey)!.opportunities.push({
+          number:
+            (row['Opportunity No'] as number | string | undefined) ||
+            grp.profMap.get(profKey)!.opportunities.length + 1,
+          indications,
+          action: pickStr(row, ['Action (HR/HW/Missed)', 'action'], 'Missed'),
+          gloves: row['Gloves Used'] === 'Yes',
+        });
+      }
+    }
+
+    for (const [sid, grp] of hhGroups.entries()) {
+      if (checkAndMarkLegacy(existingM3Legacy, sid)) {
+        summary.duplicates_skipped++;
+        continue;
+      }
+      const deptId = resolveDept('', String(grp.sessionInfo.department || ''));
+      const profs = Array.from(grp.profMap.values()).sort((a, b) => (a._colNo || 999) - (b._colNo || 999));
+      const sDate = String(grp.sessionInfo.date || new Date().toISOString().slice(0, 10));
+      phase2Statements.push({
+        sql: m3InsertSql,
+        args: [
           `m3-${crypto.randomUUID()}`,
           facilityId,
           deptId,
@@ -4677,11 +4721,20 @@ async function executeSmartMigration(
           }),
           'hand_hygiene',
           `${sDate}T10:00:00.000Z`,
-        ]);
-        summary.module_three_upserted++;
-      }
+        ],
+      });
+      summary.module_three_upserted++;
     }
-  });
+  }
+
+  const flushInBatches = async (stmts: Array<{ sql: string; args: unknown[] }>, chunkSize = 150) => {
+    for (let i = 0; i < stmts.length; i += chunkSize) {
+      await db.batch(stmts.slice(i, i + chunkSize));
+    }
+  };
+
+  await flushInBatches(phase1Statements);
+  await flushInBatches(phase2Statements);
 
   return summary;
 }
@@ -5886,13 +5939,15 @@ app.post(
         restored_counts.facility_staff++;
       }
 
+      const recordBatches: Array<{ sql: string; args: unknown[] }> = [];
+
       // 8. module_one_records
       for (const r of rowsOf('module_one_records')) {
         const id = String(r.id || `m1-${crypto.randomUUID()}`);
         const facId = mapFacId(r.facility_id);
         if (!facId) continue;
-        await tx.run(
-          `INSERT INTO module_one_records
+        recordBatches.push({
+          sql: `INSERT INTO module_one_records
              (id, facility_id, staff_id, department_id, legacy_id, created_by, payload, status, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
@@ -5903,7 +5958,7 @@ app.post(
              payload = excluded.payload,
              status = excluded.status,
              created_at = excluded.created_at`,
-          [
+          args: [
             id,
             facId,
             String(r.staff_id || 'unassigned'),
@@ -5913,8 +5968,8 @@ app.post(
             toJsonText(r.payload, '{}'),
             String(r.status || 'completed'),
             String(r.created_at || new Date().toISOString()),
-          ]
-        );
+          ],
+        });
         restored_counts.module_one_records++;
       }
 
@@ -5925,8 +5980,8 @@ app.post(
           const id = String(r.id || `${prefix}-${crypto.randomUUID()}`);
           const facId = mapFacId(r.facility_id);
           if (!facId) continue;
-          await tx.run(
-            `INSERT INTO ${tbl}
+          recordBatches.push({
+            sql: `INSERT INTO ${tbl}
                (id, facility_id, department_id, legacy_id, created_by, payload, status, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
@@ -5936,7 +5991,7 @@ app.post(
                payload = excluded.payload,
                status = excluded.status,
                created_at = excluded.created_at`,
-            [
+            args: [
               id,
               facId,
               mapDeptId(r.department_id) || 'unassigned',
@@ -5945,10 +6000,14 @@ app.post(
               toJsonText(r.payload, '{}'),
               String(r.status || 'completed'),
               String(r.created_at || new Date().toISOString()),
-            ]
-          );
+            ],
+          });
           restored_counts[tbl]++;
         }
+      }
+
+      for (let i = 0; i < recordBatches.length; i += 150) {
+        await tx.batch(recordBatches.slice(i, i + 150));
       }
     });
 
