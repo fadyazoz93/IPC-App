@@ -17,6 +17,7 @@ function restoreOriginalApiUrl(req: Request): void {
 
   if (
     pathnamePart === '/api/index' ||
+    pathnamePart === '/api/index.js' ||
     pathnamePart === '/api/index.cjs' ||
     pathnamePart === '/api'
   ) {
@@ -28,6 +29,7 @@ function restoreOriginalApiUrl(req: Request): void {
       headerPath &&
       headerPath.startsWith('/api/') &&
       headerPath !== '/api/index' &&
+      headerPath !== '/api/index.js' &&
       headerPath !== '/api/index.cjs'
     ) {
       req.url = searchPart ? `${headerPath}?${searchPart}` : headerPath;
@@ -38,6 +40,10 @@ function restoreOriginalApiUrl(req: Request): void {
 export default async function handler(req: Request, res: Response) {
   try {
     restoreOriginalApiUrl(req);
+    const mutableReq = req as Request & { _body?: boolean; body?: unknown };
+    if (req.readableEnded && mutableReq.body !== undefined) {
+      mutableReq._body = true;
+    }
     await ensureDbReady();
     await new Promise<void>((resolve) => {
       if (res.writableEnded) {
