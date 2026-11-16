@@ -67,68 +67,60 @@ function useAnimatedFavicon() {
     const drawFrame = () => {
       if (document.hidden) return;
 
-      phase = (phase + 0.08) % (Math.PI * 2);
-      const scanY = 20 + ((Math.sin(phase) + 1) / 2) * 24;
-      const pulseAlpha = 0.45 + ((Math.cos(phase * 1.5) + 1) / 2) * 0.55;
+      phase = (phase + 0.14) % (Math.PI * 2);
+      const scanProgress = (Math.sin(phase) + 1) / 2;
+      const scanY = 6 + scanProgress * 52;
+      const pulse = (Math.cos(phase) + 1) / 2;
 
       ctx.clearRect(0, 0, 64, 64);
 
-      // Chamfered clinical light background
+      // Full-bleed bold chamfered chassis so favicon reads large at 16x16
+      ctx.save();
       ctx.beginPath();
-      ctx.moveTo(2, 16);
-      ctx.lineTo(16, 2);
+      ctx.moveTo(2, 14);
+      ctx.lineTo(14, 2);
       ctx.lineTo(62, 2);
-      ctx.lineTo(62, 48);
-      ctx.lineTo(48, 62);
+      ctx.lineTo(62, 50);
+      ctx.lineTo(50, 62);
       ctx.lineTo(2, 62);
       ctx.closePath();
 
       const grad = ctx.createLinearGradient(0, 0, 64, 64);
-      grad.addColorStop(0, '#FFFFFF');
-      grad.addColorStop(1, '#E6F7F5');
+      grad.addColorStop(0, pulse > 0.5 ? '#0F766E' : '#115E59');
+      grad.addColorStop(1, '#0D9488');
       ctx.fillStyle = grad;
       ctx.fill();
 
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = '#0F766E';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#042F2E';
       ctx.stroke();
 
-      // Top calibration bar
-      ctx.fillStyle = `rgba(13, 148, 136, ${pulseAlpha.toFixed(2)})`;
-      ctx.fillRect(21, 2, 22, 3.5);
+      // Clip scanner sweep inside the full-bleed chassis
+      ctx.clip();
 
-      // Shield path
-      ctx.beginPath();
-      ctx.moveTo(32, 13);
-      ctx.lineTo(47, 19);
-      ctx.lineTo(47, 33);
-      ctx.bezierCurveTo(47, 42.2, 40.4, 49.4, 32, 52.5);
-      ctx.bezierCurveTo(23.6, 49.4, 17, 42.2, 17, 33);
-      ctx.lineTo(17, 19);
-      ctx.closePath();
-      ctx.fillStyle = '#F0FDFA';
-      ctx.fill();
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = '#0F766E';
-      ctx.stroke();
+      // Wide glowing cyan-white scanner band
+      const bandGrad = ctx.createLinearGradient(0, scanY - 12, 0, scanY + 12);
+      bandGrad.addColorStop(0, 'rgba(45, 212, 191, 0)');
+      bandGrad.addColorStop(0.5, 'rgba(153, 246, 228, 0.72)');
+      bandGrad.addColorStop(1, 'rgba(45, 212, 191, 0)');
+      ctx.fillStyle = bandGrad;
+      ctx.fillRect(0, scanY - 12, 64, 24);
 
-      // Crisp medical cross
-      ctx.strokeStyle = '#0F766E';
-      ctx.lineWidth = 4;
+      // Sharp bright core laser sweep line
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, scanY - 2, 64, 4);
+
+      ctx.restore();
+
+      // Bold high-contrast medical cross spanning almost the entire favicon
+      ctx.strokeStyle = pulse > 0.55 ? '#FFFFFF' : '#CCFBF1';
+      ctx.lineWidth = 8.5;
       ctx.lineCap = 'square';
       ctx.beginPath();
-      ctx.moveTo(32, 23);
-      ctx.lineTo(32, 39);
-      ctx.moveTo(24, 31);
-      ctx.lineTo(40, 31);
-      ctx.stroke();
-
-      // Animated scanner sweep inside shield
-      ctx.strokeStyle = 'rgba(20, 184, 166, 0.85)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(20, scanY);
-      ctx.lineTo(44, scanY);
+      ctx.moveTo(32, 13);
+      ctx.lineTo(32, 51);
+      ctx.moveTo(13, 32);
+      ctx.lineTo(51, 32);
       ctx.stroke();
 
       link!.type = 'image/png';
@@ -136,7 +128,7 @@ function useAnimatedFavicon() {
     };
 
     drawFrame();
-    const intervalId = window.setInterval(drawFrame, 110);
+    const intervalId = window.setInterval(drawFrame, 90);
     return () => {
       window.clearInterval(intervalId);
     };
@@ -145,26 +137,29 @@ function useAnimatedFavicon() {
 
 function BrandAnimatedIcon() {
   return (
-    <svg viewBox="0 0 28 28" className="w-5 h-5" fill="none" aria-hidden="true">
+    <svg viewBox="0 0 32 32" className="w-7 h-7" fill="none" aria-hidden="true">
       <path
-        d="M14 3L23 6.6V13.5C23 19.1 19.2 23.5 14 25.3C8.8 23.5 5 19.1 5 13.5V6.6L14 3Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
+        d="M16 3L27 7.2V15.5C27 22.1 22.3 27.2 16 29.3C9.7 27.2 5 22.1 5 15.5V7.2L16 3Z"
+        fill="#0F766E"
+        fillOpacity="0.1"
+        stroke="#0F766E"
+        strokeWidth="2.1"
         strokeLinejoin="round"
       />
       <path
-        d="M14 9.5V17.5M10 13.5H18"
-        stroke="currentColor"
-        strokeWidth="2"
+        d="M16 10.5V20.5M11 15.5H21"
+        stroke="#0F766E"
+        strokeWidth="2.6"
         strokeLinecap="round"
       />
       <line
         x1="7.5"
-        y1="13.5"
-        x2="20.5"
-        y2="13.5"
-        stroke="#14B8A6"
-        strokeWidth="1.4"
+        y1="15.5"
+        x2="24.5"
+        y2="15.5"
+        stroke="#06B6D4"
+        strokeWidth="2.1"
+        strokeLinecap="round"
         className="animate-scan-beam"
       />
     </svg>
@@ -174,66 +169,85 @@ function BrandAnimatedIcon() {
 function CardAnimatedIcon({ id }: { id: AppCardId }) {
   if (id === 'ipc-reports') {
     return (
-      <svg viewBox="0 0 32 32" className="w-6 h-6" fill="none" aria-hidden="true">
+      <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
         <rect
-          x="7"
-          y="6"
-          width="18"
-          height="21"
-          rx="2.5"
-          stroke="currentColor"
-          strokeWidth="1.75"
+          x="8"
+          y="7"
+          width="24"
+          height="27"
+          rx="3"
+          fill="#0F766E"
+          fillOpacity="0.08"
+          stroke="#0F766E"
+          strokeWidth="2.2"
         />
         <path
-          d="M12 6V4.5C12 3.67 12.67 3 13.5 3H18.5C19.33 3 20 3.67 20 4.5V6"
-          stroke="currentColor"
-          strokeWidth="1.75"
+          d="M14.5 7V5C14.5 3.9 15.4 3 16.5 3H23.5C24.6 3 25.5 3.9 25.5 5V7"
+          stroke="#0F766E"
+          strokeWidth="2.2"
         />
         <path
-          d="M11 16L13.5 16L15 12.5L17 19.5L18.5 15L20 16H21.5"
-          stroke="currentColor"
-          strokeWidth="1.75"
+          d="M12.5 21H16L18 15.5L21 26L23 19.5L25 21H27.5"
+          stroke="#0F766E"
+          strokeWidth="2.2"
           strokeLinecap="round"
           strokeLinejoin="round"
           className="animate-pulse-line"
         />
-        <line
-          x1="9.5"
-          y1="16"
-          x2="22.5"
-          y2="16"
-          stroke="#14B8A6"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          className="animate-scan-beam"
-        />
+        <g className="animate-scan-beam">
+          <rect x="10" y="17.5" width="20" height="5" rx="1" fill="#06B6D4" fillOpacity="0.24" />
+          <line
+            x1="10"
+            y1="20"
+            x2="30"
+            y2="20"
+            stroke="#06B6D4"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </g>
       </svg>
     );
   }
 
   if (id === 'ipc-training') {
     return (
-      <svg viewBox="0 0 32 32" className="w-6 h-6" fill="none" aria-hidden="true">
+      <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
+        <g className="animate-orbit-slow">
+          <circle
+            cx="20"
+            cy="20"
+            r="15.5"
+            stroke="#06B6D4"
+            strokeWidth="2"
+            strokeDasharray="10 6"
+            strokeLinecap="round"
+          />
+          <circle cx="20" cy="4.5" r="2.6" fill="#06B6D4" />
+        </g>
         <circle
-          cx="16"
-          cy="16"
-          r="12"
-          stroke="#14B8A6"
-          strokeWidth="1.3"
-          strokeDasharray="4 3"
-          className="animate-orbit-slow"
+          cx="20"
+          cy="20"
+          r="11.5"
+          stroke="#0F766E"
+          strokeOpacity="0.25"
+          strokeWidth="1.4"
+          strokeDasharray="3 4"
+          className="animate-orbit-reverse"
         />
         <g className="animate-droplet-float">
           <path
-            d="M16 9.5L23.5 13L16 16.5L8.5 13L16 9.5Z"
-            stroke="currentColor"
-            strokeWidth="1.75"
+            d="M20 11.5L30 16L20 20.5L10 16L20 11.5Z"
+            fill="#0F766E"
+            fillOpacity="0.14"
+            stroke="#0F766E"
+            strokeWidth="2.2"
             strokeLinejoin="round"
           />
           <path
-            d="M11.5 15V19.2C11.5 20.6 13.5 21.8 16 21.8C18.5 21.8 20.5 20.6 20.5 19.2V15"
-            stroke="currentColor"
-            strokeWidth="1.75"
+            d="M14 18.5V24C14 25.8 16.7 27.3 20 27.3C23.3 27.3 26 25.8 26 24V18.5"
+            stroke="#0F766E"
+            strokeWidth="2.2"
             strokeLinecap="round"
           />
         </g>
@@ -242,29 +256,39 @@ function CardAnimatedIcon({ id }: { id: AppCardId }) {
   }
 
   return (
-    <svg viewBox="0 0 32 32" className="w-6 h-6" fill="none" aria-hidden="true">
+    <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
       <circle
-        cx="16"
-        cy="18"
-        r="7.5"
-        stroke="#14B8A6"
-        strokeWidth="1.4"
+        cx="20"
+        cy="23"
+        r="10"
+        stroke="#06B6D4"
+        strokeWidth="2"
         className="animate-ripple-expand"
       />
-      <path
-        d="M16 6.5C16 6.5 10 13.6 10 18.2C10 21.5 12.7 24.2 16 24.2C19.3 24.2 22 21.5 22 18.2C22 13.6 16 6.5 16 6.5Z"
-        stroke="currentColor"
+      <circle
+        cx="20"
+        cy="23"
+        r="10"
+        stroke="#14B8A6"
         strokeWidth="1.8"
-        strokeLinejoin="round"
-        className="animate-droplet-float"
+        className="animate-ripple-expand-delayed"
       />
-      <path
-        d="M14 18.5C14 19.7 14.9 20.6 16 20.6"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        className="animate-droplet-float"
-      />
+      <g className="animate-droplet-float">
+        <path
+          d="M20 7.5C20 7.5 12 16.8 12 22.8C12 27.2 15.6 30.8 20 30.8C24.4 30.8 28 27.2 28 22.8C28 16.8 20 7.5 20 7.5Z"
+          fill="#0D9488"
+          fillOpacity="0.15"
+          stroke="#0F766E"
+          strokeWidth="2.3"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M17 23.2C17 25 18.4 26.4 20.2 26.4"
+          stroke="#06B6D4"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+        />
+      </g>
     </svg>
   );
 }
@@ -281,8 +305,8 @@ export default function App() {
             href="/"
             className="inline-flex items-center gap-3 font-display text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0 rounded focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700"
           >
-            <span className="p-px bg-teal-300/80 clinical-icon-chamfer shrink-0">
-              <span className="w-9 h-9 bg-teal-50/90 clinical-icon-chamfer-inner text-teal-700 flex items-center justify-center">
+            <span className="p-px bg-teal-400/90 clinical-icon-chamfer shrink-0">
+              <span className="w-11 h-11 bg-teal-50 clinical-icon-chamfer-inner text-teal-700 flex items-center justify-center">
                 <BrandAnimatedIcon />
               </span>
             </span>
@@ -394,13 +418,13 @@ export default function App() {
 
                 <div className="relative z-10">
                   <div className="flex items-center justify-between gap-4">
-                    <div className="p-px bg-teal-300/80 clinical-icon-chamfer group-hover:bg-teal-600 transition-colors duration-200 shrink-0">
-                      <div className="w-12 h-12 bg-teal-50/90 clinical-icon-chamfer-inner text-teal-700 flex items-center justify-center group-hover:bg-teal-50 group-hover:text-teal-800 transition-colors duration-200">
+                    <div className="p-px bg-teal-400/90 clinical-icon-chamfer group-hover:bg-teal-600 transition-colors duration-200 shrink-0">
+                      <div className="w-16 h-16 bg-gradient-to-br from-teal-50 to-cyan-50/70 clinical-icon-chamfer-inner text-teal-800 flex items-center justify-center group-hover:from-teal-50 group-hover:to-cyan-100/70 transition-colors duration-200">
                         <CardAnimatedIcon id={app.id} />
                       </div>
                     </div>
 
-                    <div className="w-8 h-8 rounded-md border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-400 group-hover:border-teal-300 group-hover:bg-teal-50 group-hover:text-teal-700 transition-colors duration-200 shrink-0">
+                    <div className="w-9 h-9 rounded-md border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-400 group-hover:border-teal-400 group-hover:bg-teal-50 group-hover:text-teal-700 transition-colors duration-200 shrink-0">
                       <ArrowUpLeft
                         className="w-4 h-4 group-hover:-translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-200"
                         aria-hidden="true"
