@@ -5,15 +5,15 @@
     --font-display: 'Cairo', 'IBM Plex Sans Arabic', sans-serif;
     --font-sans: 'IBM Plex Sans Arabic', 'Cairo', sans-serif;
     --font-mono: 'IBM Plex Mono', monospace;
-    color-scheme: dark;
+    color-scheme: light;
   }
 
   html,
   body {
     font-family: var(--font-sans);
     direction: rtl;
-    background-color: #060a11;
-    color: #f1f5f9;
+    background-color: #f4f7fa;
+    color: #0f172a;
     overflow-x: clip;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -22,7 +22,6 @@
   h1, h2, h3, .font-display {
     font-family: var(--font-display);
     text-wrap: balance;
-    letter-spacing: 0.005em;
   }
 
   .font-mono-nums {
@@ -32,11 +31,11 @@
 }
 
 .clinical-grid-bg {
-  background-color: #060a11;
+  background-color: #f4f7fa;
   background-image:
-    radial-gradient(ellipse 75% 45% at 50% -10%, rgba(20, 184, 166, 0.11), transparent 70%),
-    linear-gradient(to right, rgba(148, 163, 184, 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+    radial-gradient(ellipse 80% 45% at 50% -10%, rgba(20, 184, 166, 0.10), transparent 70%),
+    linear-gradient(to right, rgba(15, 118, 110, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(15, 118, 110, 0.045) 1px, transparent 1px);
   background-size: 100% 100%, 48px 48px, 48px 48px;
 }
 
@@ -82,6 +81,80 @@
     calc(100% - 9.5px) 100%,
     0 100%
   );
+}
+
+@keyframes scan-beam {
+  0%, 100% {
+    transform: translateY(-5px);
+    opacity: 0.35;
+  }
+  50% {
+    transform: translateY(7px);
+    opacity: 0.95;
+  }
+}
+
+@keyframes orbit-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes droplet-float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-2.5px);
+  }
+}
+
+@keyframes ripple-expand {
+  0% {
+    transform: scale(0.75);
+    opacity: 0.75;
+  }
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+
+@keyframes pulse-line {
+  0%, 100% {
+    opacity: 0.55;
+    transform: scaleX(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleX(1.04);
+  }
+}
+
+.animate-scan-beam {
+  animation: scan-beam 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.animate-orbit-slow {
+  transform-origin: center;
+  animation: orbit-slow 12s linear infinite;
+}
+
+.animate-droplet-float {
+  animation: droplet-float 2.8s ease-in-out infinite;
+}
+
+.animate-ripple-expand {
+  transform-origin: center;
+  animation: ripple-expand 2.6s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.animate-pulse-line {
+  transform-origin: center;
+  animation: pulse-line 2.4s ease-in-out infinite;
 }
 
 .tabular-nums {

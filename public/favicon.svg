@@ -1,5 +1,51 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <rect width="64" height="64" rx="14" fill="#0F766E"/>
-  <path d="M32 14L48 20.5V33.5C48 43.2 41.1 50.8 32 54C22.9 50.8 16 43.2 16 33.5V20.5L32 14Z" stroke="#FFFFFF" stroke-width="3" fill="rgba(255,255,255,0.12)"/>
-  <path d="M32 24V40M24 32H40" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="bg-light" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E6F7F5" />
+    </linearGradient>
+    <linearGradient id="teal-border" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F766E" />
+      <stop offset="50%" stop-color="#14B8A6" />
+      <stop offset="100%" stop-color="#0F766E" />
+    </linearGradient>
+  </defs>
+
+  <!-- Chamfered light clinical chassis -->
+  <polygon
+    points="2,16 16,2 62,2 62,48 48,62 2,62"
+    fill="url(#bg-light)"
+    stroke="url(#teal-border)"
+    stroke-width="2.5"
+  />
+
+  <!-- Top animated calibration bar -->
+  <rect x="20" y="2" width="24" height="3.5" fill="#0D9488">
+    <animate attributeName="opacity" values="1;0.35;1" dur="1.8s" repeatCount="indefinite" />
+  </rect>
+
+  <!-- Geometric medical protection shield -->
+  <path
+    d="M32 13L47 19V33C47 42.2 40.4 49.4 32 52.5C23.6 49.4 17 42.2 17 33V19L32 13Z"
+    fill="#F0FDFA"
+    stroke="#0F766E"
+    stroke-width="2.5"
+    stroke-linejoin="round"
+  />
+
+  <!-- Crisp medical cross -->
+  <path
+    d="M32 23V39M24 31H40"
+    stroke="#0F766E"
+    stroke-width="4"
+    stroke-linecap="square"
+  >
+    <animate attributeName="stroke" values="#0F766E;#14B8A6;#0F766E" dur="2s" repeatCount="indefinite" />
+  </path>
+
+  <!-- Scanning telemetry sweep -->
+  <line x1="19" y1="22" x2="45" y2="22" stroke="#14B8A6" stroke-width="2" stroke-opacity="0.75">
+    <animate attributeName="y1" values="20;44;20" dur="2.2s" repeatCount="indefinite" />
+    <animate attributeName="y2" values="20;44;20" dur="2.2s" repeatCount="indefinite" />
+  </line>
 </svg>
