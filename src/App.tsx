@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ArrowUpLeft } from 'lucide-react';
 import heroVisual from './assets/images/futuristic_light_medical_center_1794850624631.jpg';
 
-type AppCardId = 'ipc-reports' | 'ipc-training' | 'ipc-hhc';
+type AppCardId = 'ipc-reports' | 'ipc-training' | 'ipc-hhc' | 'ipc-competency';
 
 interface PortalAppItem {
   id: AppCardId;
@@ -40,6 +40,15 @@ const PORTAL_APPS: PortalAppItem[] = [
     description:
       'توثيق جلسات الملاحظة المباشرة للامتثال لغسيل الأيدي وحساب نسب الالتزام حسب الفئات الطبية.',
     url: 'https://ipc-hhc.vercel.app/',
+  },
+  {
+    id: 'ipc-competency',
+    indexLabel: '04',
+    categoryLabel: 'تقييم الكفاءة المهنية',
+    title: 'Competency Assessment',
+    description:
+      'تقييم وقياس الكفاءة العملية للكوادر الصحية في تطبيق سياسات وإجراءات مكافحة العدوى المعتمدة.',
+    url: 'https://ipc-competency.vercel.app/',
   },
 ];
 
@@ -255,6 +264,53 @@ function CardAnimatedIcon({ id }: { id: AppCardId }) {
     );
   }
 
+  if (id === 'ipc-competency') {
+    return (
+      <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
+        <g className="animate-orbit-slow">
+          <circle
+            cx="20"
+            cy="20"
+            r="16"
+            stroke="#06B6D4"
+            strokeWidth="1.9"
+            strokeDasharray="6 6"
+            strokeLinecap="round"
+          />
+          <circle cx="36" cy="20" r="2.2" fill="#06B6D4" />
+        </g>
+        <polygon
+          points="20,7 31,13.5 31,26.5 20,33 9,26.5 9,13.5"
+          fill="#0F766E"
+          fillOpacity="0.1"
+          stroke="#0F766E"
+          strokeWidth="2.2"
+          strokeLinejoin="round"
+        />
+        <g className="animate-scan-beam">
+          <line
+            x1="12"
+            y1="20"
+            x2="28"
+            y2="20"
+            stroke="#06B6D4"
+            strokeWidth="2"
+            strokeOpacity="0.6"
+            strokeLinecap="round"
+          />
+        </g>
+        <path
+          d="M14.5 20.5L18.2 24.2L26 16"
+          stroke="#0F766E"
+          strokeWidth="2.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="animate-pulse-line"
+        />
+      </svg>
+    );
+  }
+
   return (
     <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
       <circle
@@ -330,7 +386,7 @@ export default function App() {
 
             <p className="text-sm sm:text-base text-slate-600 leading-relaxed max-w-xl">
               منصة دخول مركزي للكوادر الطبية والإدارية للوصول المباشر إلى نظام تقارير المرور،
-              والبرنامج التدريبي، وإحصائية غسيل الأيدي.
+              البرنامج التدريبي، إحصائية غسيل الأيدي، وتقييم الكفاءة المهنية.
             </p>
           </div>
 
@@ -369,7 +425,7 @@ export default function App() {
 
         <section
           aria-label="قائمة التطبيقات"
-          className="mt-10 grid grid-cols-1 md:grid-cols-3 gap-6"
+          className="mt-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6"
         >
           {PORTAL_APPS.map((app) => (
             <a
@@ -412,6 +468,14 @@ export default function App() {
                       <circle cx="60" cy="60" r="38" stroke="currentColor" strokeWidth="1" strokeDasharray="4 4" />
                       <circle cx="60" cy="60" r="24" stroke="currentColor" strokeWidth="0.9" />
                       <path d="M60 32C60 32 45 50 45 61C45 69.3 51.7 76 60 76C68.3 76 75 69.3 75 61C75 50 60 32 60 32Z" stroke="currentColor" strokeWidth="1.3" />
+                    </>
+                  )}
+                  {app.id === 'ipc-competency' && (
+                    <>
+                      <polygon points="60,18 96,60 60,102 24,60" stroke="currentColor" strokeWidth="1" />
+                      <polygon points="60,32 82,60 60,88 38,60" stroke="currentColor" strokeWidth="0.85" />
+                      <path d="M60 18V102M24 60H96" stroke="currentColor" strokeWidth="0.7" strokeDasharray="3 3" />
+                      <path d="M51 60L57.5 66.5L70 53" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                     </>
                   )}
                 </svg>
