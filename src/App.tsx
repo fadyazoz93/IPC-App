@@ -2,7 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { ArrowUpLeft } from 'lucide-react';
 import heroVisual from './assets/images/futuristic_light_medical_center_1794850624631.jpg';
 
-type AppCardId = 'ipc-reports' | 'ipc-training' | 'ipc-hhc' | 'ipc-competency';
+type AppCardId =
+  | 'ipc-reports'
+  | 'ipc-training'
+  | 'ipc-hhc'
+  | 'ipc-competency'
+  | 'mms-reports'
+  | 'mms-training';
 
 interface PortalAppItem {
   id: AppCardId;
@@ -18,7 +24,7 @@ const PORTAL_APPS: PortalAppItem[] = [
     id: 'ipc-reports',
     indexLabel: '01',
     categoryLabel: 'المتابعة الميدانية',
-    title: 'تقارير المرور',
+    title: 'تقارير مرور مكافحة العدوى',
     description:
       'تسجيل ومتابعة جولات المرور الدورية على الأقسام الطبية، ورصد الملاحظات والتوصيات التصحيحية.',
     url: 'https://ipc-reports.vercel.app/',
@@ -27,7 +33,7 @@ const PORTAL_APPS: PortalAppItem[] = [
     id: 'ipc-training',
     indexLabel: '02',
     categoryLabel: 'التدريب والتأهيل',
-    title: 'البرنامج التدريبي',
+    title: 'البرنامج التدريبي لمكافحة العدوى',
     description:
       'إدارة الخطط التدريبية الشهرية للكوادر الصحية، وتسجيل الحضور والسياسات التدريبية المعتمدة.',
     url: 'https://ipc-training.vercel.app/',
@@ -49,6 +55,24 @@ const PORTAL_APPS: PortalAppItem[] = [
     description:
       'تقييم وقياس الكفاءة العملية للكوادر الصحية في تطبيق سياسات وإجراءات مكافحة العدوى المعتمدة.',
     url: 'https://ipc-competency.vercel.app/',
+  },
+  {
+    id: 'mms-reports',
+    indexLabel: '05',
+    categoryLabel: 'إدارة وسلامة الدواء',
+    title: 'تقارير مرور إدارة وسلامة الدواء',
+    description:
+      'متابعة جولات التفتيش والمرور الدوري على الصيدليات ومخازن الأدوية، ورصد ملاحظات سلامة الدواء.',
+    url: 'https://mms-reports.vercel.app/',
+  },
+  {
+    id: 'mms-training',
+    indexLabel: '06',
+    categoryLabel: 'التدريب · سلامة الدواء',
+    title: 'البرنامج التدريبي لإدارة وسلامة الدواء',
+    description:
+      'تنظيم البرامج والخطط التدريبية للكوادر الصحية في سياسات الصرف الآمن والتعامل مع الأدوية.',
+    url: 'https://mms-training.vercel.app/',
   },
 ];
 
@@ -311,6 +335,97 @@ function CardAnimatedIcon({ id }: { id: AppCardId }) {
     );
   }
 
+  if (id === 'mms-reports') {
+    return (
+      <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
+        <rect
+          x="7"
+          y="7"
+          width="26"
+          height="26"
+          rx="3.5"
+          fill="#0F766E"
+          fillOpacity="0.08"
+          stroke="#0F766E"
+          strokeWidth="2.1"
+        />
+        <g className="animate-pulse-line">
+          <g transform="rotate(-45 20 20)">
+            <rect
+              x="11"
+              y="15.5"
+              width="18"
+              height="9"
+              rx="4.5"
+              fill="#0D9488"
+              fillOpacity="0.16"
+              stroke="#0F766E"
+              strokeWidth="2.1"
+            />
+            <line x1="20" y1="15.5" x2="20" y2="24.5" stroke="#0F766E" strokeWidth="2.1" />
+          </g>
+        </g>
+        <g className="animate-scan-beam">
+          <rect x="9.5" y="17.5" width="21" height="5" rx="1" fill="#06B6D4" fillOpacity="0.24" />
+          <line
+            x1="9.5"
+            y1="20"
+            x2="30.5"
+            y2="20"
+            stroke="#06B6D4"
+            strokeWidth="2.3"
+            strokeLinecap="round"
+          />
+        </g>
+      </svg>
+    );
+  }
+
+  if (id === 'mms-training') {
+    return (
+      <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
+        <g className="animate-orbit-slow">
+          <circle
+            cx="20"
+            cy="20"
+            r="15.5"
+            stroke="#06B6D4"
+            strokeWidth="2"
+            strokeDasharray="9 6"
+            strokeLinecap="round"
+          />
+          <circle cx="20" cy="4.5" r="2.5" fill="#06B6D4" />
+        </g>
+        <circle
+          cx="20"
+          cy="20"
+          r="11.5"
+          stroke="#0F766E"
+          strokeOpacity="0.25"
+          strokeWidth="1.4"
+          strokeDasharray="3 4"
+          className="animate-orbit-reverse"
+        />
+        <g className="animate-droplet-float">
+          <path
+            d="M20 9.5L29 13.3V19.8C29 25 25.2 29 20 30.6C14.8 29 11 25 11 19.8V13.3L20 9.5Z"
+            fill="#0F766E"
+            fillOpacity="0.12"
+            stroke="#0F766E"
+            strokeWidth="2.1"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M20 15.2V23.8M15.7 19.5H24.3"
+            stroke="#0F766E"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </g>
+      </svg>
+    );
+  }
+
   return (
     <svg viewBox="0 0 40 40" className="w-10 h-10" fill="none" aria-hidden="true">
       <circle
@@ -377,16 +492,16 @@ export default function App() {
             <div className="flex items-center gap-2 text-xs font-medium text-teal-700">
               <span>المراكز الطبية</span>
               <span aria-hidden="true" className="text-slate-300">·</span>
-              <span className="text-slate-500">وحدة الجودة ومكافحة العدوى</span>
+              <span className="text-slate-500">مكافحة العدوى وإدارة وسلامة الدواء</span>
             </div>
 
             <h1 className="font-display text-3xl sm:text-4xl lg:text-[2.65rem] font-bold text-slate-900 leading-[1.22]">
-              البوابة الموحدة لتطبيقات مكافحة العدوى
+              البوابة الموحدة لتطبيقات مكافحة العدوى وسلامة الدواء
             </h1>
 
             <p className="text-sm sm:text-base text-slate-600 leading-relaxed max-w-xl">
-              منصة دخول مركزي للكوادر الطبية والإدارية للوصول المباشر إلى نظام تقارير المرور،
-              البرنامج التدريبي، إحصائية غسيل الأيدي، وتقييم الكفاءة المهنية.
+              منصة دخول مركزي للكوادر الطبية والإدارية للوصول المباشر إلى تطبيقات مكافحة العدوى
+              وبرامج إدارة وسلامة الدواء وتقييم الكفاءة المهنية.
             </p>
           </div>
 
@@ -425,7 +540,7 @@ export default function App() {
 
         <section
           aria-label="قائمة التطبيقات"
-          className="mt-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6"
+          className="mt-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"
         >
           {PORTAL_APPS.map((app) => (
             <a
@@ -476,6 +591,22 @@ export default function App() {
                       <polygon points="60,32 82,60 60,88 38,60" stroke="currentColor" strokeWidth="0.85" />
                       <path d="M60 18V102M24 60H96" stroke="currentColor" strokeWidth="0.7" strokeDasharray="3 3" />
                       <path d="M51 60L57.5 66.5L70 53" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                    </>
+                  )}
+                  {app.id === 'mms-reports' && (
+                    <>
+                      <rect x="22" y="22" width="76" height="76" stroke="currentColor" strokeWidth="0.9" strokeDasharray="4 4" />
+                      <g transform="rotate(-45 60 60)">
+                        <rect x="30" y="46" width="60" height="28" rx="14" stroke="currentColor" strokeWidth="1.3" />
+                        <line x1="60" y1="46" x2="60" y2="74" stroke="currentColor" strokeWidth="1.2" />
+                      </g>
+                    </>
+                  )}
+                  {app.id === 'mms-training' && (
+                    <>
+                      <circle cx="60" cy="60" r="38" stroke="currentColor" strokeWidth="1" strokeDasharray="5 4" />
+                      <path d="M60 28L84 38V58C84 73 73.5 84.5 60 89C46.5 84.5 36 73 36 58V38L60 28Z" stroke="currentColor" strokeWidth="1.15" />
+                      <path d="M60 45V71M47 58H73" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
                     </>
                   )}
                 </svg>
